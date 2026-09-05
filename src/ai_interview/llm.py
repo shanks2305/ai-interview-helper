@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ValidationError
 
+from .modes import SYSTEM_PROMPT
 from .settings import (
     LLM_API_KEY,
     LLM_BASE_URL,
@@ -30,30 +31,67 @@ QuestionReady = Callable[[str], Awaitable[None]]
 
 logger = logging.getLogger("uvicorn.error")
 
-SYSTEM_PROMPT = """You are a senior software engineer answering a live interview question.
+CONTEXT_ROLE_CHARS = 200
+CONTEXT_JD_CHARS = 6000
+CONTEXT_RESUME_CHARS = 8000
 
-The user message is the interviewer's question. Start the spoken answer immediately.
-Do not repeat the question. No labels, no preamble, no markdown.
 
-Sound like a senior engineer in the room:
-1. Open with a precise definition (what it is, and what it is not if that helps).
-2. Give one concrete production-style example (name the pieces: API, DB, queue, UI).
-3. Call out the trade-off or when you would not use it.
-Keep it tight: 4-6 sentences.
-"""
+def _clip(text: str, limit: int) -> str:
+    value = (text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1].rstrip() + "…"
 
-TYPED_PROMPT = """You are a senior software engineer answering a typed interview question.
-It may be a coding problem, system design prompt, or anything pasted from a screen.
 
-The user message is the full question. Answer so a candidate can speak it and write it.
+def context_block(
+    *,
+    role: str = "",
+    company: str = "",
+    job_description: str = "",
+    resume: str = "",
+) -> str:
+    role_text = _clip(role, CONTEXT_ROLE_CHARS)
+    company_text = _clip(company, CONTEXT_ROLE_CHARS)
+    jd_text = _clip(job_description, CONTEXT_JD_CHARS)
+    resume_text = _clip(resume, CONTEXT_RESUME_CHARS)
+    if not any((role_text, company_text, jd_text, resume_text)):
+        return ""
+    lines = ["Candidate context for this interview:"]
+    if role_text:
+        lines.append(f"- Role: {role_text}")
+    if company_text:
+        lines.append(f"- Company: {company_text}")
+    if jd_text:
+        lines.extend(["", "Job description:", jd_text])
+    if resume_text:
+        lines.extend(["", "Resume / background:", resume_text])
+    lines.extend(
+        [
+            "",
+            "Use this only when relevant. Ground answers in the candidate's experience.",
+            "Do not recite the resume or job description unless asked.",
+        ]
+    )
+    return "\n".join(lines)
 
-1. Restate the goal in one sentence.
-2. Name the approach and time/space complexity when it is a coding problem.
-3. If code is needed, give a complete solution in a fenced code block (Python unless another language is specified).
-4. Walk through one example and one edge case.
 
-Be concrete. Prefer working code over theory.
-"""
+def build_system_prompt(
+    base: str,
+    *,
+    role: str = "",
+    company: str = "",
+    job_description: str = "",
+    resume: str = "",
+) -> str:
+    extra = context_block(
+        role=role,
+        company=company,
+        job_description=job_description,
+        resume=resume,
+    )
+    if not extra:
+        return base
+    return f"{base.rstrip()}\n\n{extra}"
 
 
 class CopilotTurn(BaseModel):
@@ -139,30 +177,32 @@ def _parse_turn(raw: str, transcript: str) -> CopilotTurn:
     if re.match(r"NOT_A_QUESTION\b", text, flags=re.IGNORECASE):
         return CopilotTurn(stage="not_a_question", question=transcript.strip(), latest_speech=transcript.strip())
 
-    try:
-        data = _extract_json(text)
-        stage = data.get("stage") or "answer"
-        if stage == "listening":
-            stage = "answer"
-        parsed = CopilotTurn(
-            stage=stage if stage in {"not_a_question", "answer"} else "answer",
-            latest_speech=str(data.get("latest_speech") or transcript),
-            question=str(data.get("question") or transcript).strip(),
-            answer=str(data.get("answer") or "").strip(),
-        )
-        if parsed.stage != "answer" or parsed.answer:
-            return parsed
-    except (json.JSONDecodeError, ValidationError, TypeError):
-        pass
+    if _looks_like_json_object(text):
+        try:
+            data = _extract_json(text)
+            stage = data.get("stage") or "answer"
+            if stage == "listening":
+                stage = "answer"
+            parsed = CopilotTurn(
+                stage=stage if stage in {"not_a_question", "answer"} else "answer",
+                latest_speech=str(data.get("latest_speech") or transcript),
+                question=str(data.get("question") or transcript).strip(),
+                answer=str(data.get("answer") or "").strip(),
+            )
+            if parsed.stage != "answer" or parsed.answer:
+                return parsed
+        except (json.JSONDecodeError, ValidationError, TypeError):
+            pass
 
     question = transcript.strip()
     answer = text
-    match = re.search(r"QUESTION:\s*(.*?)\s*ANSWER:\s*(.*)", text, flags=re.DOTALL | re.IGNORECASE)
-    if match:
-        question = match.group(1).strip() or question
-        answer = match.group(2).strip()
+    if "```" not in text:
+        match = re.search(r"QUESTION:\s*(.*?)\s*ANSWER:\s*(.*)", text, flags=re.DOTALL | re.IGNORECASE)
+        if match:
+            question = match.group(1).strip() or question
+            answer = match.group(2).strip()
     if not answer:
-        return CopilotTurn(stage="not_a_question", question=question, latest_speech=question)
+        return CopilotTurn(stage="answer", question=question, latest_speech=question, answer="")
     return CopilotTurn(stage="answer", question=question, latest_speech=question, answer=answer)
 
 
@@ -180,6 +220,8 @@ def _visible_answer(raw: str) -> str:
     stripped = (raw or "").strip()
     if re.match(r"NOT_A_QUESTION\b", stripped, flags=re.IGNORECASE):
         return ""
+    if "```" in stripped:
+        return stripped
     question, answer = _partial_qa(stripped)
     if answer:
         return answer
@@ -188,13 +230,25 @@ def _visible_answer(raw: str) -> str:
     return stripped
 
 
+def _history_messages(history: list[tuple[str, str]] | None) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    for question, answer in history or []:
+        q = (question or "").strip()
+        if not q:
+            continue
+        messages.append({"role": "user", "content": q})
+        messages.append({"role": "assistant", "content": (answer or "").strip() or "(no answer drafted)"})
+    return messages
+
+
 async def copilot_turn(
     client: AsyncOpenAI,
     transcript: str,
-    already_handled: list[str],
+    already_handled: list[str] | None = None,
     on_question: QuestionReady | None = None,
     on_answer: AnswerDelta | None = None,
     *,
+    history: list[tuple[str, str]] | None = None,
     system_prompt: str | None = None,
     max_tokens: int | None = None,
 ) -> CopilotTurn:
@@ -204,6 +258,7 @@ async def copilot_turn(
         "model": LLM_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
+            *_history_messages(history),
             {
                 "role": "user",
                 "content": transcript.strip() or "(silence)",
@@ -251,6 +306,11 @@ def _stream_text(chunk) -> str:
     if delta is None:
         return ""
     return (getattr(delta, "content", None) or "").strip("\x00")
+
+
+def _looks_like_json_object(text: str) -> bool:
+    stripped = (text or "").lstrip()
+    return stripped.startswith("{") or stripped.startswith("```json")
 
 
 def _extract_json(text: str) -> dict:

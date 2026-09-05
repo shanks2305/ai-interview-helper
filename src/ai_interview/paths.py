@@ -40,3 +40,10 @@ def renderer_dir() -> Path:
 
 def desktop_dir() -> Path:
     return project_root() / "desktop"
+
+
+def data_dir() -> Path:
+    explicit = os.getenv("AI_INTERVIEW_DATA", "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    return project_root() / "data"

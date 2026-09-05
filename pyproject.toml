@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "Shishir Bahuguna", email = "contactshishirbahuguna@gmail.com" }
 ]
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.141.1",
     "faster-whisper>=1.2.1",

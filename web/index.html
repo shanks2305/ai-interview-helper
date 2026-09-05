@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Live Q&amp;A</title>
-    <link rel="stylesheet" href="/live/styles.css?v=17" />
+    <link rel="stylesheet" href="/live/styles.css?v=26" />
   </head>
   <body data-view="idle">
     <main class="shell">
@@ -22,21 +22,72 @@
             <p id="subtitle" class="sub">Live copilot</p>
           </div>
         </div>
-        <p id="status" class="pill" data-state="checking">Connecting</p>
+        <div class="nav-end">
+          <button id="new-session" type="button" class="ghost-btn">New session</button>
+          <p id="status" class="pill" data-state="checking">Connecting</p>
+        </div>
       </header>
+
+      <div class="mode-bar" id="mode-bar" role="radiogroup" aria-label="Answer mode"></div>
 
       <section class="live-stage" id="live-stage">
         <section class="current" id="current">
           <div class="current-head">
             <span class="tag">Question</span>
-            <button id="copy-answer" type="button" class="ghost-btn" hidden>Copy answer</button>
+            <div class="current-actions">
+              <div id="view-bar" class="view-bar" hidden role="radiogroup" aria-label="Answer layout">
+                <button type="button" class="view-btn" data-layout="points" aria-checked="true">Points</button>
+                <button type="button" class="view-btn" data-layout="full" aria-checked="false">Full</button>
+              </div>
+              <button id="copy-answer" type="button" class="ghost-btn" hidden>Copy talking points</button>
+            </div>
           </div>
           <p id="question" class="question is-placeholder">No question yet</p>
-          <span class="tag accent">Answer</span>
-          <p id="answer" class="answer-body is-placeholder">
+          <span class="tag accent" id="answer-tag">Answer · 45s</span>
+          <div id="answer" class="answer-body is-placeholder">
             Start listening in the desktop app, or paste a question that was not asked out loud.
-          </p>
+          </div>
         </section>
+
+        <details class="ask-card" id="context-card">
+          <summary class="ask-summary">
+            <span class="ask-summary-title">Interview context</span>
+            <span id="context-hint" class="ask-summary-hint">Paste the JD and resume once — used for every answer</span>
+          </summary>
+          <form id="context-form">
+            <div class="context-grid">
+              <label class="field">
+                <span class="field-label">Role</span>
+                <input id="context-role" type="text" autocomplete="off" placeholder="Staff software engineer" />
+              </label>
+              <label class="field">
+                <span class="field-label">Company</span>
+                <input id="context-company" type="text" autocomplete="off" placeholder="Acme" />
+              </label>
+            </div>
+            <label class="field">
+              <span class="field-label">Job description</span>
+              <textarea
+                id="context-jd"
+                rows="5"
+                placeholder="Paste the job description…"
+              ></textarea>
+            </label>
+            <label class="field">
+              <span class="field-label">Resume</span>
+              <textarea
+                id="context-resume"
+                rows="7"
+                placeholder="Paste your resume, or the bullets you want answers grounded in…"
+              ></textarea>
+            </label>
+            <div class="ask-actions">
+              <button type="submit" id="context-save">Save context</button>
+              <button type="button" id="context-clear" class="ghost-btn">Clear</button>
+              <p id="context-error" class="ask-error" hidden></p>
+            </div>
+          </form>
+        </details>
 
         <details class="ask-card" id="ask-card">
           <summary class="ask-summary">
@@ -66,8 +117,16 @@
 
       <section class="dashboard" id="dashboard" hidden>
         <section class="dash-hero">
-          <span class="tag accent">Session dashboard</span>
-          <h1 id="dash-title">How this session went</h1>
+          <div class="dash-hero-row">
+            <div>
+              <span class="tag accent">Session dashboard</span>
+              <h1 id="dash-title">How this session went</h1>
+            </div>
+            <div class="export-actions" id="export-actions" hidden>
+              <a id="export-md" class="ghost-btn">Markdown</a>
+              <a id="export-pdf" class="ghost-btn" target="_blank" rel="noopener">Save PDF</a>
+            </div>
+          </div>
           <p id="recap-summary" class="recap-summary"></p>
         </section>
 
@@ -137,7 +196,18 @@
           </div>
         </section>
       </section>
+
+      <section class="library" id="library" hidden>
+        <div class="library-head">
+          <p class="history-label">Past sessions</p>
+          <label class="sr-only" for="library-search">Search sessions</label>
+          <input id="library-search" type="search" placeholder="Search questions…" autocomplete="off" />
+        </div>
+        <p id="library-empty" class="library-empty">No saved sessions yet.</p>
+        <ul id="library-list" class="library-list"></ul>
+      </section>
     </main>
-    <script src="/live/app.js?v=17"></script>
+    <script src="/live/markdown.js?v=26"></script>
+    <script src="/live/app.js?v=26"></script>
   </body>
 </html>

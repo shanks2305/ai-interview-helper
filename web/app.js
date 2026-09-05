@@ -9,6 +9,14 @@ const dashboardEl = document.getElementById("dashboard");
 const recapBodyEl = document.getElementById("recap-body");
 const recapSummaryEl = document.getElementById("recap-summary");
 const dashChartEl = document.getElementById("dash-chart");
+const dashTitleEl = document.getElementById("dash-title");
+const exportActionsEl = document.getElementById("export-actions");
+const exportMdEl = document.getElementById("export-md");
+const exportPdfEl = document.getElementById("export-pdf");
+const libraryEl = document.getElementById("library");
+const libraryListEl = document.getElementById("library-list");
+const libraryEmptyEl = document.getElementById("library-empty");
+const librarySearchEl = document.getElementById("library-search");
 
 const askCardEl = document.getElementById("ask-card");
 const askFormEl = document.getElementById("ask-form");
@@ -17,18 +25,321 @@ const askSubmitEl = document.getElementById("ask-submit");
 const askErrorEl = document.getElementById("ask-error");
 const askShortcutEl = document.getElementById("ask-shortcut");
 const copyAnswerBtn = document.getElementById("copy-answer");
+const answerTagEl = document.getElementById("answer-tag");
+const modeBarEl = document.getElementById("mode-bar");
+const viewBarEl = document.getElementById("view-bar");
+const contextCardEl = document.getElementById("context-card");
+const contextFormEl = document.getElementById("context-form");
+const contextRoleEl = document.getElementById("context-role");
+const contextCompanyEl = document.getElementById("context-company");
+const contextJdEl = document.getElementById("context-jd");
+const contextResumeEl = document.getElementById("context-resume");
+const contextHintEl = document.getElementById("context-hint");
+const contextSaveEl = document.getElementById("context-save");
+const contextClearEl = document.getElementById("context-clear");
+const contextErrorEl = document.getElementById("context-error");
+const newSessionBtn = document.getElementById("new-session");
 
-const wsUrl = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws/live`;
+const ACCESS_TOKEN = new URLSearchParams(location.search).get("token") || "";
+const wsUrl = (() => {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = new URL("/ws/live", `${protocol}//${location.host}`);
+  if (ACCESS_TOKEN) {
+    url.searchParams.set("token", ACCESS_TOKEN);
+  }
+  return url.toString();
+})();
 const isMac = /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent);
 const PLACEHOLDER_QUESTION = "No question yet";
 const PLACEHOLDER_ANSWER =
   "Start listening in the desktop app, or paste a question that was not asked out loud.";
+const SKIPPED_ANSWER = "Skipped — not a question.";
+const SKIP_LABELS = {
+  filler: "Skipped — filler.",
+  greeting: "Skipped — not a question.",
+  incomplete: "Skipped — false start.",
+  overlap: "Skipped — overlapping speech.",
+  duplicate: "Already answered.",
+  not_a_question: "Skipped — not a question.",
+};
 
 let socket = null;
 let reconnectTimer = 0;
 let latestSession = null;
 let currentView = "idle";
-let current = { question: "", answer: "" };
+let current = { question: "", answer: "", source: "", answer_mode: "", talking_points: null };
+let libraryItems = [];
+let libraryQuery = "";
+let libraryTimer = 0;
+let wakeLock = null;
+const COPY_LABEL = "Copy talking points";
+const CONTEXT_STORAGE_KEY = "ai-interview-context";
+const MODE_STORAGE_KEY = "ai-interview-answer-mode";
+const VIEW_STORAGE_KEY = "ai-interview-answer-view";
+const CONTEXT_HINT = "Paste the JD and resume once — used for every answer";
+const DEFAULT_ANSWER_MODE = "spoken_45";
+const DEFAULT_ANSWER_MODES = [
+  { id: "spoken_15", label: "15s", title: "15s spoken", markdown: false },
+  { id: "spoken_45", label: "45s", title: "45s spoken", markdown: false },
+  { id: "star", label: "STAR", title: "STAR", markdown: true },
+  { id: "system_design", label: "Design", title: "System-design outline", markdown: true },
+  { id: "bullets", label: "Bullets", title: "Glanceable bullets", markdown: true },
+];
+let contextDirty = false;
+let contextSeeded = false;
+let answerModes = DEFAULT_ANSWER_MODES;
+let currentAnswerMode = DEFAULT_ANSWER_MODE;
+let modeSeeded = false;
+let answerLayout = "points";
+
+function emptyContext() {
+  return { role: "", company: "", job_description: "", resume: "" };
+}
+
+function hasContext(payload) {
+  const ctx = payload || {};
+  return Boolean(
+    (ctx.role || "").trim() ||
+      (ctx.company || "").trim() ||
+      (ctx.job_description || "").trim() ||
+      (ctx.resume || "").trim()
+  );
+}
+
+function contextLabel(payload) {
+  const role = (payload?.role || "").trim();
+  const company = (payload?.company || "").trim();
+  if (role && company) {
+    return `${role} · ${company}`;
+  }
+  if (role || company) {
+    return role || company;
+  }
+  if (hasContext(payload)) {
+    return "JD and resume saved";
+  }
+  return "";
+}
+
+function contextFromForm() {
+  return {
+    role: contextRoleEl?.value.trim() || "",
+    company: contextCompanyEl?.value.trim() || "",
+    job_description: contextJdEl?.value.trim() || "",
+    resume: contextResumeEl?.value.trim() || "",
+  };
+}
+
+function loadContextDraft() {
+  try {
+    const raw = localStorage.getItem(CONTEXT_STORAGE_KEY);
+    if (!raw) {
+      return emptyContext();
+    }
+    const parsed = JSON.parse(raw);
+    return {
+      role: parsed.role || "",
+      company: parsed.company || "",
+      job_description: parsed.job_description || "",
+      resume: parsed.resume || "",
+    };
+  } catch {
+    return emptyContext();
+  }
+}
+
+function saveContextDraft(payload) {
+  try {
+    localStorage.setItem(CONTEXT_STORAGE_KEY, JSON.stringify(payload || contextFromForm()));
+  } catch {
+    // Private mode / quota.
+  }
+}
+
+function fillContextForm(payload, { markSaved = false } = {}) {
+  const ctx = payload || emptyContext();
+  if (contextRoleEl) contextRoleEl.value = ctx.role || "";
+  if (contextCompanyEl) contextCompanyEl.value = ctx.company || "";
+  if (contextJdEl) contextJdEl.value = ctx.job_description || "";
+  if (contextResumeEl) contextResumeEl.value = ctx.resume || "";
+  if (markSaved) {
+    contextDirty = false;
+  }
+  updateContextHint(ctx);
+}
+
+function updateContextHint(payload) {
+  if (!contextHintEl) {
+    return;
+  }
+  const ctx = payload || contextFromForm();
+  const label = contextLabel(ctx);
+  contextHintEl.textContent = label || CONTEXT_HINT;
+}
+
+function setContextError(message) {
+  if (!contextErrorEl) {
+    return;
+  }
+  contextErrorEl.hidden = !message;
+  contextErrorEl.textContent = message || "";
+}
+
+function contextFromSession(session, fallback) {
+  if (session?.context && typeof session.context === "object") {
+    return {
+      role: session.context.role || "",
+      company: session.context.company || "",
+      job_description: session.context.job_description || "",
+      resume: session.context.resume || "",
+    };
+  }
+  return fallback || emptyContext();
+}
+
+function applyContext(payload, { force = false, markSaved = false } = {}) {
+  if (contextDirty && !force) {
+    updateContextHint(contextFromForm());
+    return;
+  }
+  fillContextForm(payload, { markSaved });
+}
+
+function normalizeAnswerMode(value) {
+  const key = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[-\s]/g, "_");
+  if (answerModes.some((mode) => mode.id === key)) {
+    return key;
+  }
+  const aliases = {
+    "15": "spoken_15",
+    "15s": "spoken_15",
+    "45": "spoken_45",
+    "45s": "spoken_45",
+    spoken: "spoken_45",
+    design: "system_design",
+    outline: "system_design",
+    glanceable: "bullets",
+    bullet: "bullets",
+    behavioral: "star",
+  };
+  return aliases[key] || DEFAULT_ANSWER_MODE;
+}
+
+function modeSpec(id) {
+  const value = normalizeAnswerMode(id);
+  return answerModes.find((mode) => mode.id === value) || answerModes[1];
+}
+
+function modeUsesMarkdown(id) {
+  return Boolean(modeSpec(id)?.markdown);
+}
+
+function loadStoredAnswerMode() {
+  try {
+    return normalizeAnswerMode(localStorage.getItem(MODE_STORAGE_KEY) || DEFAULT_ANSWER_MODE);
+  } catch {
+    return DEFAULT_ANSWER_MODE;
+  }
+}
+
+function saveAnswerMode(mode) {
+  try {
+    localStorage.setItem(MODE_STORAGE_KEY, normalizeAnswerMode(mode));
+  } catch {
+    // Private mode / quota.
+  }
+}
+
+function updateAnswerTag() {
+  if (!answerTagEl) {
+    return;
+  }
+  const spec = modeSpec(current.answer_mode || currentAnswerMode);
+  if (answerLayout === "points" && canShowPoints(current.answer)) {
+    answerTagEl.textContent = "Talking points";
+    return;
+  }
+  answerTagEl.textContent = `Answer · ${spec.label}`;
+}
+
+function applyAnswerMode(mode) {
+  currentAnswerMode = normalizeAnswerMode(mode);
+  saveAnswerMode(currentAnswerMode);
+  if (modeBarEl) {
+    for (const btn of modeBarEl.querySelectorAll(".mode-btn")) {
+      btn.setAttribute("aria-checked", btn.dataset.mode === currentAnswerMode ? "true" : "false");
+    }
+  }
+  updateAnswerTag();
+}
+
+function renderModeBar() {
+  if (!modeBarEl) {
+    return;
+  }
+  modeBarEl.replaceChildren();
+  for (const mode of answerModes) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "mode-btn";
+    btn.dataset.mode = mode.id;
+    btn.setAttribute("role", "radio");
+    btn.setAttribute("aria-checked", mode.id === currentAnswerMode ? "true" : "false");
+    btn.title = mode.title || mode.label;
+    btn.textContent = mode.label;
+    btn.addEventListener("click", () => {
+      submitAnswerMode(mode.id);
+    });
+    modeBarEl.append(btn);
+  }
+}
+
+async function submitAnswerMode(mode, { quiet = false } = {}) {
+  applyAnswerMode(mode);
+  try {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "set_answer_mode", mode: currentAnswerMode }));
+      return;
+    }
+    const response = await fetch(withToken("/api/session/answer-mode"), {
+      method: "PUT",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ mode: currentAnswerMode }),
+    });
+    if (!response.ok && !quiet) {
+      throw new Error("Could not save answer mode.");
+    }
+  } catch {
+    if (!quiet) {
+      setStatus("down", "Could not save answer mode");
+    }
+  }
+}
+
+function seedAnswerMode(event) {
+  if (Array.isArray(event.answer_modes) && event.answer_modes.length) {
+    answerModes = event.answer_modes;
+    renderModeBar();
+  }
+  const server = normalizeAnswerMode(event.answer_mode || event.session?.answer_mode);
+  const local = loadStoredAnswerMode();
+  if (server && server !== DEFAULT_ANSWER_MODE) {
+    applyAnswerMode(server);
+    modeSeeded = true;
+    return;
+  }
+  if (!modeSeeded && local !== server) {
+    applyAnswerMode(local);
+    modeSeeded = true;
+    submitAnswerMode(local, { quiet: true });
+    return;
+  }
+  applyAnswerMode(server || local);
+  modeSeeded = true;
+}
 
 function setStatus(state, label) {
   statusEl.dataset.state = state;
@@ -41,13 +352,50 @@ function setView(view) {
   const ended = view === "ended";
   liveStageEl.hidden = false;
   dashboardEl.hidden = !ended;
+  if (libraryEl) {
+    libraryEl.hidden = view === "live";
+  }
   subtitleEl.textContent = ended ? "Session recap" : "Live copilot";
+  syncWakeLock();
   if (ended && latestSession) {
     requestAnimationFrame(() => {
       renderChart(dashChartEl, latestSession.turns ?? [], { height: 240, emptyEl: null });
     });
     dashboardEl.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+}
+
+async function requestWakeLock() {
+  if (!("wakeLock" in navigator) || document.visibilityState !== "visible") {
+    return;
+  }
+  if (currentView === "ended") {
+    return;
+  }
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", () => {
+      wakeLock = null;
+    });
+  } catch {
+    // Unsupported in this context (common on iOS Safari tabs).
+  }
+}
+
+function releaseWakeLock() {
+  if (!wakeLock) {
+    return;
+  }
+  wakeLock.release().catch(() => {});
+  wakeLock = null;
+}
+
+function syncWakeLock() {
+  if (currentView === "ended" || document.visibilityState !== "visible") {
+    releaseWakeLock();
+    return;
+  }
+  requestWakeLock();
 }
 
 function showHistory() {
@@ -73,15 +421,62 @@ function formatElapsed(ms) {
   return `${minutes}:${seconds}`;
 }
 
-function prependPair(question, answer) {
+function formatWhen(iso) {
+  if (!iso) {
+    return "";
+  }
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function withToken(url) {
+  if (!ACCESS_TOKEN) {
+    return url;
+  }
+  const next = new URL(url, location.origin);
+  next.searchParams.set("token", ACCESS_TOKEN);
+  return `${next.pathname}${next.search}`;
+}
+
+function authHeaders(extra = {}) {
+  if (!ACCESS_TOKEN) {
+    return extra;
+  }
+  return { ...extra, "X-Interview-Token": ACCESS_TOKEN };
+}
+
+function bindExport(session) {
+  const id = session?.id;
+  if (!exportActionsEl || !exportMdEl || !exportPdfEl) {
+    return;
+  }
+  if (!id) {
+    exportActionsEl.hidden = true;
+    return;
+  }
+  exportActionsEl.hidden = false;
+  exportMdEl.href = withToken(`/api/sessions/${id}/export.md`);
+  exportMdEl.setAttribute("download", "");
+  exportPdfEl.href = withToken(`/api/sessions/${id}/print?autoprint=1`);
+}
+
+function prependPair(question, answer, source, mode) {
   const item = document.createElement("li");
   item.className = "pair";
   const q = document.createElement("p");
   q.className = "pair-q";
   q.textContent = question;
-  const a = document.createElement("p");
+  const a = document.createElement("div");
   a.className = "pair-a";
-  a.textContent = answer;
+  setRichText(a, answer, source, mode);
   item.append(q, a);
   item.addEventListener("click", () => {
     item.classList.toggle("is-open");
@@ -91,36 +486,338 @@ function prependPair(question, answer) {
 }
 
 function archiveCurrent() {
-  if (current.question && current.answer) {
-    prependPair(current.question, current.answer);
+  if (current.question && current.answer && !isSkipAnswer(current.answer) && current.answer !== PLACEHOLDER_ANSWER) {
+    prependPair(current.question, current.answer, current.source, current.answer_mode);
   }
-  current = { question: "", answer: "" };
+  current = { question: "", answer: "", source: "", answer_mode: currentAnswerMode, talking_points: null };
+}
+
+function isSkipAnswer(text) {
+  const value = text || "";
+  return (
+    value === "Drafting…" ||
+    value.startsWith("Skipped") ||
+    value.startsWith("Already answered")
+  );
+}
+
+function readyStatusLabel(detail) {
+  const text = (detail || "").toLowerCase();
+  if (text.includes("already answered")) {
+    return "Already answered";
+  }
+  if (
+    text.includes("skip") ||
+    text.includes("false start") ||
+    text.includes("not a question") ||
+    text.includes("filler") ||
+    text.includes("overlap")
+  ) {
+    return "Skipped";
+  }
+  if (text.includes("no speech")) {
+    return "No speech";
+  }
+  return "Answer ready";
+}
+
+function talkingPoints(text, payload) {
+  const points = normalizeTalkingPoints(payload) || extractTalkingPoints(text);
+  return formatTalkingPoints(points);
+}
+
+function normalizeTalkingPoints(payload) {
+  const bullets = (payload?.bullets || [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, 5);
+  if (!bullets.length) {
+    return null;
+  }
+  return { bullets, example: String(payload.example || "").trim() };
+}
+
+function formatTalkingPoints(points) {
+  if (!points?.bullets?.length) {
+    return "";
+  }
+  const lines = points.bullets.map((item) => `• ${item}`);
+  if (points.example) {
+    lines.push("", `Example: ${points.example}`);
+  }
+  return lines.join("\n");
+}
+
+function extractTalkingPoints(text) {
+  const cleaned = String(text || "")
+    .replace(/```[\s\S]*?```/g, "\n")
+    .trim();
+  if (!cleaned) {
+    return null;
+  }
+  const items = fromStar(cleaned) || fromBullets(cleaned) || fromSentences(cleaned);
+  if (!items.length) {
+    return null;
+  }
+  const example = pickExample(items);
+  const others = items.map((item) => item.text).filter((item) => item !== example);
+  if (example && others.length >= 3) {
+    return { bullets: others.slice(0, 5), example };
+  }
+  return { bullets: items.map((item) => item.text).slice(0, 5), example: "" };
+}
+
+function cleanPoint(text, label) {
+  let value = String(text || "")
+    .replace(/[*_`#]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[-—:]\s*/, "");
+  if (label && value && !new RegExp(`^${label}\\b`, "i").test(value)) {
+    value = `${label}: ${value}`;
+  }
+  if (value.length > 220) {
+    value = `${value.slice(0, 219).trim()}…`;
+  }
+  return value;
+}
+
+function fromStar(text) {
+  const found = [];
+  for (const raw of text.split(/\n+/)) {
+    const match = raw
+      .replace(/^#{1,6}\s+/, "")
+      .trim()
+      .match(/^\*{0,2}(Situation|Task|Action|Result|Goal|Requirements|Design|Flow|Scale|Trade-?offs?)\*{0,2}\s*[:—-]\s*(.+)$/i);
+    if (!match) {
+      continue;
+    }
+    const label = canonicalLabel(match[1]);
+    const value = cleanPoint(match[2], label);
+    if (value) {
+      found.push({ text: value, label });
+    }
+  }
+  return found.length >= 2 ? found : null;
+}
+
+function fromBullets(text) {
+  const found = [];
+  for (const raw of text.split(/\n+/)) {
+    const line = raw.replace(/^#{1,6}\s+/, "").trim();
+    const bold = line.match(/^(?:(?:[-*+]|\d+[.)])\s+)?\*\*(.+?)\*\*\s*[—:-]\s*(.+)$/);
+    if (bold) {
+      const label = canonicalLabel(bold[1]);
+      const value = cleanPoint(bold[2], label);
+      if (value) {
+        found.push({ text: value, label });
+      }
+      continue;
+    }
+    const match = line.match(/^\s*(?:[-*+]|\d+[.)])\s+(.+)$/);
+    if (!match) {
+      continue;
+    }
+    const value = cleanPoint(match[1], "");
+    if (value) {
+      found.push({ text: value, label: "" });
+    }
+  }
+  return found.length >= 2 ? found : null;
+}
+
+function fromSentences(text) {
+  const collapsed = text.replace(/^#{1,6}\s+/gm, "").replace(/\s+/g, " ").trim();
+  const parts = collapsed
+    .split(/(?<=[.!?])\s+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 12);
+  const sentences = parts.length ? parts : collapsed ? [collapsed] : [];
+  return sentences.slice(0, 8).map((item) => ({ text: cleanPoint(item, ""), label: "" })).filter((item) => item.text);
+}
+
+function canonicalLabel(value) {
+  const key = String(value || "").toLowerCase().replace(/[^a-z]+/g, "");
+  const names = {
+    situation: "Situation",
+    task: "Task",
+    action: "Action",
+    result: "Result",
+    goal: "Goal",
+    requirements: "Requirements",
+    design: "Design",
+    flow: "Flow",
+    scale: "Scale",
+    tradeoff: "Trade-off",
+    tradeoffs: "Trade-offs",
+  };
+  return names[key] || String(value || "").trim();
+}
+
+function pickExample(items) {
+  const hint =
+    /\b(for example|e\.g\.|such as|say we|say you|in production|production|postgres|postgresql|redis|kafka|stripe|dynamo|s3|webhook|checkout|inventory|mutex|semaphore|queue|\bapi\b|\bdb\b)\b/i;
+  let best = { score: 0, text: "" };
+  items.forEach((item, index) => {
+    let score = 0;
+    if (hint.test(item.text)) {
+      score += 3;
+    }
+    if (/^(action|design|flow)$/i.test(item.label)) {
+      score += 4;
+    }
+    if (index > 0 && /\b[A-Z][a-zA-Z]+\b/.test(item.text)) {
+      score += 1;
+    }
+    if (item.text.length > 90) {
+      score += 1;
+    }
+    if (index === 0) {
+      score -= 1;
+    }
+    if (score > best.score) {
+      best = { score, text: item.text };
+    }
+  });
+  return best.score > 0 ? best.text : "";
+}
+
+function loadAnswerLayout() {
+  try {
+    const stored = localStorage.getItem(VIEW_STORAGE_KEY);
+    return stored === "full" ? "full" : "points";
+  } catch {
+    return "points";
+  }
+}
+
+function saveAnswerLayout(layout) {
+  answerLayout = layout === "full" ? "full" : "points";
+  try {
+    localStorage.setItem(VIEW_STORAGE_KEY, answerLayout);
+  } catch {
+    // Private mode / quota.
+  }
+  if (viewBarEl) {
+    for (const btn of viewBarEl.querySelectorAll(".view-btn")) {
+      btn.setAttribute("aria-checked", btn.dataset.layout === answerLayout ? "true" : "false");
+    }
+  }
+  document.body.dataset.layout = answerLayout;
+  updateAnswerTag();
+  if (current.answer) {
+    setAnswerText(current.answer);
+  }
+}
+
+function canShowPoints(text) {
+  return Boolean(text) && text !== "Drafting…" && text !== PLACEHOLDER_ANSWER && !isSkipAnswer(text);
+}
+
+function renderTalkingPoints(el, points) {
+  el.classList.remove("is-markdown", "is-placeholder");
+  el.classList.add("is-points");
+  el.replaceChildren();
+  const list = document.createElement("ul");
+  list.className = "points-list";
+  for (const item of points.bullets) {
+    const li = document.createElement("li");
+    li.textContent = item;
+    list.append(li);
+  }
+  el.append(list);
+  if (points.example) {
+    const box = document.createElement("div");
+    box.className = "points-example";
+    const label = document.createElement("span");
+    label.className = "points-example-label";
+    label.textContent = "Example";
+    const body = document.createElement("p");
+    body.className = "points-example-text";
+    body.textContent = points.example;
+    box.append(label, body);
+    el.append(box);
+  }
 }
 
 function updateCopyButton() {
   if (!copyAnswerBtn) {
     return;
   }
-  const ready = Boolean(current.answer) && current.answer !== "Drafting…";
+  const ready = canShowPoints(current.answer);
   copyAnswerBtn.hidden = !ready;
-  copyAnswerBtn.textContent = "Copy answer";
+  copyAnswerBtn.textContent = COPY_LABEL;
+  if (viewBarEl) {
+    viewBarEl.hidden = !ready;
+  }
 }
 
-function setQuestionText(text) {
+function shouldRenderMarkdown(source, text, mode) {
+  if (!text || text === "Drafting…" || text === PLACEHOLDER_ANSWER || isSkipAnswer(text)) {
+    return false;
+  }
+  if (typeof window.renderMarkdown !== "function") {
+    return false;
+  }
+  if (modeUsesMarkdown(mode || current.answer_mode || currentAnswerMode)) {
+    return true;
+  }
+  return source === "typed";
+}
+
+function setRichText(el, text, source, mode) {
+  const markdown = shouldRenderMarkdown(source, text, mode);
+  el.classList.toggle("is-markdown", markdown);
+  if (markdown) {
+    window.renderMarkdown(el, text);
+    return;
+  }
+  el.textContent = text;
+}
+
+function setQuestionText(text, { partial = false } = {}) {
   const value = text || "";
   questionEl.classList.toggle("is-placeholder", !value);
+  questionEl.classList.toggle("is-partial", Boolean(partial) && Boolean(value));
   questionEl.textContent = value || PLACEHOLDER_QUESTION;
 }
 
 function setAnswerText(text) {
   const value = text || "";
+  const skipped = Boolean(value) && isSkipAnswer(value) && value !== "Drafting…";
   answerEl.classList.toggle("is-placeholder", !value);
-  answerEl.textContent = value || PLACEHOLDER_ANSWER;
+  answerEl.classList.toggle("is-skip", skipped);
+  if (!value) {
+    answerEl.classList.remove("is-markdown", "is-points");
+    answerEl.textContent = PLACEHOLDER_ANSWER;
+    updateCopyButton();
+    updateAnswerTag();
+    return;
+  }
+  const points =
+    normalizeTalkingPoints(current.talking_points) ||
+    (canShowPoints(value) ? extractTalkingPoints(value) : null);
+  if (answerLayout === "points" && canShowPoints(value) && points?.bullets?.length) {
+    current.talking_points = points;
+    renderTalkingPoints(answerEl, points);
+    updateCopyButton();
+    updateAnswerTag();
+    return;
+  }
+  answerEl.classList.remove("is-points");
+  setRichText(answerEl, value, current.source, current.answer_mode || currentAnswerMode);
   updateCopyButton();
+  updateAnswerTag();
 }
 
-function setCurrent(question, answer) {
-  current = { question: question || "", answer: answer || "" };
+function setCurrent(question, answer, source, mode, talkingPointsPayload) {
+  current = {
+    question: question || "",
+    answer: answer || "",
+    source: source ?? current.source ?? "",
+    answer_mode: normalizeAnswerMode(mode || current.answer_mode || currentAnswerMode),
+    talking_points: normalizeTalkingPoints(talkingPointsPayload),
+  };
   setQuestionText(current.question);
   setAnswerText(current.answer);
 }
@@ -215,6 +912,10 @@ function renderRecap(session) {
       `Average listen ${formatMs(stats.avg_listen_ms)}, average answer ${formatMs(stats.avg_answer_ms)} ` +
       `(fastest ${formatMs(stats.fastest_answer_ms)}, slowest ${formatMs(stats.slowest_answer_ms)}).`
     : "No questions were recorded in this session.";
+  if (dashTitleEl) {
+    dashTitleEl.textContent = session?.title || "How this session went";
+  }
+  bindExport(session);
 
   const set = (id, value) => {
     const el = document.getElementById(id);
@@ -235,11 +936,13 @@ function renderRecap(session) {
 function applySession(session, { ended = false } = {}) {
   latestSession = session || null;
   if (!session) {
+    bindExport(null);
     setView("idle");
     return;
   }
 
   if (session.active) {
+    bindExport(null);
     setView("live");
     return;
   }
@@ -247,6 +950,105 @@ function applySession(session, { ended = false } = {}) {
   if (ended || session.active === false) {
     renderRecap(session);
     setView("ended");
+  }
+}
+
+function showStoredSession(session) {
+  const turns = session?.turns ?? [];
+  logEl.replaceChildren();
+  const last = turns[turns.length - 1];
+  const older = last ? turns.slice(0, -1) : turns;
+  for (const turn of older) {
+    prependPair(turn.question, turn.answer, turn.source, turn.answer_mode);
+  }
+  setCurrent(last?.question || "", last?.answer || "", last?.source || "", last?.answer_mode);
+  showHistory();
+  applySession(session, { ended: session && session.active === false });
+  applyContext(contextFromSession(session), { markSaved: Boolean(session?.active) });
+  applyAnswerMode(session?.answer_mode || last?.answer_mode || currentAnswerMode);
+  renderLibrary();
+}
+
+function renderLibrary() {
+  if (!libraryListEl || !libraryEmptyEl) {
+    return;
+  }
+  libraryListEl.replaceChildren();
+  libraryEmptyEl.hidden = libraryItems.length > 0;
+  libraryEmptyEl.textContent = libraryQuery
+    ? "No sessions match that search."
+    : "No saved sessions yet.";
+  const currentId = latestSession?.id;
+  for (const item of libraryItems) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "library-item";
+    if (item.id === currentId) {
+      button.classList.add("is-current");
+    }
+    const title = document.createElement("span");
+    title.className = "library-title";
+    title.textContent = item.title || "Empty session";
+    const meta = document.createElement("span");
+    meta.className = "library-meta";
+    const when = formatWhen(item.ended_at || item.updated_at || item.started_at);
+    const count = item.questions === 1 ? "1 question" : `${item.questions || 0} questions`;
+    const roleCompany = [item.role, item.company].filter(Boolean).join(" · ");
+    meta.textContent = [count, when, roleCompany, item.active ? "In progress" : ""]
+      .filter(Boolean)
+      .join(" · ");
+    button.append(title, meta);
+    if (item.preview) {
+      const preview = document.createElement("span");
+      preview.className = "library-preview";
+      preview.textContent = item.preview;
+      button.append(preview);
+    }
+    button.addEventListener("click", () => {
+      openLibrarySession(item.id);
+    });
+    libraryListEl.append(button);
+  }
+}
+
+async function loadLibrary(query = libraryQuery) {
+  libraryQuery = query;
+  try {
+    const params = new URLSearchParams();
+    if (query) {
+      params.set("q", query);
+    }
+    const response = await fetch(withToken(`/api/sessions${params.size ? `?${params}` : ""}`), {
+      headers: authHeaders(),
+    });
+    if (!response.ok) {
+      throw new Error("Could not load sessions.");
+    }
+    const payload = await response.json();
+    libraryItems = payload.sessions || [];
+  } catch {
+    libraryItems = [];
+  }
+  renderLibrary();
+}
+
+async function openLibrarySession(sessionId) {
+  try {
+    const response = await fetch(withToken(`/api/sessions/${sessionId}`), {
+      headers: authHeaders(),
+    });
+    if (!response.ok) {
+      throw new Error("Could not open session.");
+    }
+    const session = await response.json();
+    showStoredSession(session);
+    if (session.active) {
+      setStatus("ok", "Session in progress");
+    } else {
+      setStatus("ok", "Saved recap");
+    }
+  } catch {
+    setStatus("down", "Could not open session");
   }
 }
 
@@ -260,12 +1062,15 @@ function applySnapshot(event) {
     return pair.question !== liveQuestion || pair.answer !== liveAnswer;
   });
   for (const pair of [...older].reverse()) {
-    prependPair(pair.question, pair.answer);
+    prependPair(pair.question, pair.answer, pair.source, pair.answer_mode);
   }
-  setCurrent(liveQuestion, liveAnswer);
+  setCurrent(liveQuestion, liveAnswer, event.source || "", event.answer_mode, event.talking_points);
   showHistory();
   applySession(event.session);
+  seedContext(event);
+  seedAnswerMode(event);
   setStatus(event.listening ? "ok" : "checking", event.listening ? "Listening" : "Waiting");
+  loadLibrary();
 }
 
 function handleEvent(event) {
@@ -277,18 +1082,52 @@ function handleEvent(event) {
   if (type === "session_start") {
     logEl.replaceChildren();
     showHistory();
-    setCurrent("", "");
+    setCurrent("", "", "", event.session?.answer_mode);
     applySession(event.session);
+    applyContext(contextFromSession(event.session, event.context), { markSaved: true });
+    applyAnswerMode(event.session?.answer_mode || event.answer_mode || currentAnswerMode);
     setStatus("ok", "Session started");
+    loadLibrary();
+    return;
+  }
+  if (type === "session_resume") {
+    showStoredSession(event.session);
+    applyContext(contextFromSession(event.session, event.context), { markSaved: true });
+    applyAnswerMode(event.session?.answer_mode || event.answer_mode || currentAnswerMode);
+    setStatus("ok", "Session resumed");
+    return;
+  }
+  if (type === "context_updated") {
+    const ctx = event.context || contextFromSession(event.session);
+    applyContext(ctx, { force: true, markSaved: true });
+    saveContextDraft(ctx);
+    if (event.session) {
+      latestSession = event.session;
+    }
+    setContextError("");
+    return;
+  }
+  if (type === "answer_mode_updated") {
+    applyAnswerMode(event.answer_mode || event.session?.answer_mode);
+    if (event.session) {
+      latestSession = event.session;
+    }
     return;
   }
   if (type === "turn_stats") {
     latestSession = event.session || latestSession;
+    if (currentView === "ended") {
+      renderRecap(latestSession);
+    } else {
+      bindExport(null);
+    }
+    renderLibrary();
     return;
   }
   if (type === "session_summary") {
     applySession(event.session, { ended: true });
     setStatus("ok", "Dashboard ready");
+    loadLibrary();
     return;
   }
   if (type === "status") {
@@ -298,9 +1137,24 @@ function handleEvent(event) {
     } else if (state === "thinking") {
       setStatus("checking", "Drafting");
     } else if (state === "ready") {
-      setStatus("ok", "Answer ready");
+      setStatus("ok", readyStatusLabel(event.detail));
     } else {
       setStatus("ok", "Listening");
+    }
+    return;
+  }
+  if (type === "skip") {
+    const label = event.detail || SKIP_LABELS[event.reason] || SKIPPED_ANSWER;
+    setStatus(event.reason === "duplicate" ? "ok" : "checking", event.reason === "duplicate" ? "Already answered" : "Skipped");
+    if (!current.answer || current.answer === "Drafting…" || isSkipAnswer(current.answer)) {
+      current.question = event.text || current.question;
+      current.answer = label;
+      current.source = event.source || current.source || "spoken";
+      current.answer_mode = normalizeAnswerMode(event.answer_mode || current.answer_mode || currentAnswerMode);
+      current.talking_points = null;
+      setQuestionText(current.question);
+      setAnswerText(current.answer);
+      updateAnswerTag();
     }
     return;
   }
@@ -310,31 +1164,54 @@ function handleEvent(event) {
     }
     current.question = event.text || "…";
     current.answer = "";
-    setQuestionText(current.question);
+    current.source = event.source || "spoken";
+    current.answer_mode = normalizeAnswerMode(event.answer_mode || currentAnswerMode);
+    current.talking_points = null;
+    setQuestionText(current.question, { partial: true });
     setAnswerText("");
+    setStatus("checking", "Hearing question");
     return;
   }
   if (type === "question") {
     archiveCurrent();
     current.question = event.text || "";
-    current.answer = event.valid === false ? "Skipped — not a question." : "";
+    current.answer = event.valid === false ? SKIPPED_ANSWER : "";
+    current.source = event.source || "spoken";
+    current.answer_mode = normalizeAnswerMode(event.answer_mode || currentAnswerMode);
+    current.talking_points = null;
     setQuestionText(current.question);
     setAnswerText(current.answer || (event.valid === false ? "" : "Drafting…"));
+    updateAnswerTag();
     if (event.valid === false) {
-      prependPair(current.question, current.answer);
-      current = { question: "", answer: "" };
+      prependPair(current.question, current.answer, current.source, current.answer_mode);
+      current = { question: "", answer: "", source: "", answer_mode: currentAnswerMode, talking_points: null };
       updateCopyButton();
+      updateAnswerTag();
     }
     return;
   }
   if (type === "answer_delta") {
     current.answer = event.text || "";
+    if (event.source) {
+      current.source = event.source;
+    }
+    if (event.answer_mode) {
+      current.answer_mode = normalizeAnswerMode(event.answer_mode);
+    }
+    current.talking_points = normalizeTalkingPoints(event.talking_points);
     setAnswerText(current.answer);
     setStatus("checking", "Drafting");
     return;
   }
   if (type === "answer") {
     current.answer = event.text || "";
+    if (event.source) {
+      current.source = event.source;
+    }
+    if (event.answer_mode) {
+      current.answer_mode = normalizeAnswerMode(event.answer_mode);
+    }
+    current.talking_points = normalizeTalkingPoints(event.talking_points);
     setAnswerText(current.answer);
     setStatus("ok", "Answer ready");
     return;
@@ -346,6 +1223,13 @@ function handleEvent(event) {
     }
     current.question = event.question || current.question;
     current.answer = event.answer || "";
+    if (event.source) {
+      current.source = event.source;
+    }
+    if (event.answer_mode) {
+      current.answer_mode = normalizeAnswerMode(event.answer_mode);
+    }
+    current.talking_points = normalizeTalkingPoints(event.talking_points);
     setQuestionText(current.question);
     setAnswerText(current.answer);
     setStatus("ok", "Answer ready");
@@ -370,8 +1254,12 @@ function connect() {
       setStatus("down", "Bad event");
     }
   });
-  socket.addEventListener("close", () => {
+  socket.addEventListener("close", (event) => {
     socket = null;
+    if (event.code === 4401) {
+      setStatus("down", ACCESS_TOKEN ? "Invalid access token" : "Need ?token= in the live URL");
+      return;
+    }
     setStatus("down", "Reconnecting");
     window.clearTimeout(reconnectTimer);
     reconnectTimer = window.setTimeout(connect, 1500);
@@ -381,7 +1269,106 @@ function connect() {
   });
 }
 
-connect();
+function seedContext(event) {
+  const server = event.context || contextFromSession(event.session);
+  if (hasContext(server)) {
+    applyContext(server, { markSaved: true });
+    contextSeeded = true;
+    return;
+  }
+  if (contextDirty) {
+    updateContextHint(contextFromForm());
+    return;
+  }
+  const draft = hasContext(contextFromForm()) ? contextFromForm() : loadContextDraft();
+  if (!hasContext(draft)) {
+    if (!contextSeeded) {
+      applyContext(emptyContext());
+    }
+    contextSeeded = true;
+    return;
+  }
+  if (!contextSeeded) {
+    fillContextForm(draft);
+  }
+  contextSeeded = true;
+  submitContext({ quiet: true });
+}
+
+async function submitContext({ quiet = false } = {}) {
+  const payload = contextFromForm();
+  saveContextDraft(payload);
+  setContextError("");
+  if (contextSaveEl) {
+    contextSaveEl.disabled = true;
+  }
+  try {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "set_context", ...payload }));
+    } else {
+      const response = await fetch(withToken("/api/session/context"), {
+        method: "PUT",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || "Could not save context.");
+      }
+      const body = await response.json().catch(() => ({}));
+      applyContext(body.context || payload, { force: true, markSaved: true });
+    }
+    contextDirty = false;
+    updateContextHint(payload);
+    if (contextCardEl && !quiet) {
+      contextCardEl.open = false;
+    }
+  } catch (error) {
+    if (!quiet) {
+      setContextError(error instanceof Error ? error.message : "Could not save context.");
+    }
+  } finally {
+    if (contextSaveEl) {
+      contextSaveEl.disabled = false;
+    }
+  }
+}
+
+async function clearContext() {
+  fillContextForm(emptyContext(), { markSaved: true });
+  saveContextDraft(emptyContext());
+  await submitContext({ quiet: true });
+  setContextError("");
+}
+
+async function startNewSession() {
+  if (newSessionBtn) {
+    newSessionBtn.disabled = true;
+  }
+  try {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "new_session" }));
+      return;
+    }
+    const response = await fetch(withToken("/api/session/new"), {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    if (!response.ok) {
+      throw new Error("Could not start a new session.");
+    }
+    const payload = await response.json();
+    if (payload.session) {
+      handleEvent({ type: "session_start", session: payload.session });
+    }
+  } catch {
+    setStatus("down", "Could not start session");
+  } finally {
+    if (newSessionBtn) {
+      newSessionBtn.disabled = false;
+    }
+  }
+}
 
 function setAskError(message) {
   if (!askErrorEl) {
@@ -407,7 +1394,7 @@ async function submitTypedQuestion() {
     } else {
       const response = await fetch("/api/ask", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ text }),
       });
       if (!response.ok) {
@@ -420,7 +1407,7 @@ async function submitTypedQuestion() {
       askCardEl.open = false;
     }
     setView("live");
-    setCurrent(text, "Drafting…");
+    setCurrent(text, "Drafting…", "typed", currentAnswerMode);
     setStatus("checking", "Drafting");
   } catch (error) {
     setAskError(error instanceof Error ? error.message : "Could not send the question.");
@@ -453,26 +1440,74 @@ askCardEl?.addEventListener("toggle", () => {
   }
 });
 
+contextFormEl?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  submitContext();
+});
+
+contextClearEl?.addEventListener("click", () => {
+  clearContext();
+});
+
+contextFormEl?.addEventListener("input", () => {
+  contextDirty = true;
+  saveContextDraft();
+  updateContextHint(contextFromForm());
+});
+
+contextCardEl?.addEventListener("toggle", () => {
+  if (contextCardEl.open) {
+    contextRoleEl?.focus();
+  }
+});
+
+newSessionBtn?.addEventListener("click", () => {
+  startNewSession();
+});
+
 copyAnswerBtn?.addEventListener("click", async () => {
-  if (!current.answer) {
+  const points = talkingPoints(current.answer, current.talking_points);
+  if (!points) {
     return;
   }
   try {
-    await navigator.clipboard.writeText(current.answer);
+    await navigator.clipboard.writeText(points);
     copyAnswerBtn.textContent = "Copied";
     window.setTimeout(() => {
-      copyAnswerBtn.textContent = "Copy answer";
+      copyAnswerBtn.textContent = COPY_LABEL;
     }, 1200);
   } catch {
     copyAnswerBtn.textContent = "Copy failed";
   }
 });
+
+viewBarEl?.addEventListener("click", (event) => {
+  const btn = event.target.closest(".view-btn");
+  if (!btn?.dataset.layout) {
+    return;
+  }
+  saveAnswerLayout(btn.dataset.layout);
+});
+document.addEventListener("visibilitychange", syncWakeLock);
 window.addEventListener("resize", () => {
   if (currentView === "ended" && latestSession) {
     renderChart(dashChartEl, latestSession.turns ?? [], { height: 240, emptyEl: null });
   }
 });
 
+librarySearchEl?.addEventListener("input", () => {
+  window.clearTimeout(libraryTimer);
+  libraryTimer = window.setTimeout(() => {
+    loadLibrary(librarySearchEl.value.trim());
+  }, 200);
+});
+
 if (window.interviewApp) {
   document.body.classList.add("in-electron");
 }
+
+renderModeBar();
+applyAnswerMode(loadStoredAnswerMode());
+saveAnswerLayout(loadAnswerLayout());
+connect();
+syncWakeLock();

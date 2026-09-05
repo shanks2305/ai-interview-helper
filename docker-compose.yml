@@ -3,13 +3,19 @@ services:
     build: .
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:
+      # Bind is 0.0.0.0; set AI_INTERVIEW_TOKEN in .env for host/phone /api and /ws access.
       AI_INTERVIEW_ROOT: /app
+      AI_INTERVIEW_HOST: "0.0.0.0"
     volumes:
       - hf-cache:/data/hf-cache
+      - interview-data:/app/data
     restart: unless-stopped
 
 volumes:
   hf-cache:
+  interview-data:

@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from .llm import TYPED_PROMPT, copilot_turn, new_clients, transcribe_audio
-from .session import InterviewSession, TurnRecord, ms_between, utc_now
-from .settings import MIN_AUDIO_BYTES, STT_PROVIDER, LLM_MAX_TOKENS, chat_ready, readiness_error
+from .classify import DETAILS, ClipVerdict, classify_clip
+from .llm import build_system_prompt, copilot_turn, new_clients, transcribe_audio
+from .modes import DEFAULT_ANSWER_MODE, max_tokens_for_mode, normalize_answer_mode, prompt_for_mode
+from .session import InterviewSession, TurnRecord, ms_between, normalize_context, utc_now
+from .settings import MIN_AUDIO_BYTES, STT_PROVIDER, chat_ready, readiness_error
+from .store import SessionStore, get_store
+from .talking_points import extract_talking_points
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -17,40 +20,48 @@ Emit = Callable[[dict[str, Any]], Awaitable[None]]
 REUSE_EXTRA_BYTES = 12000
 
 
-def _fold(text: str) -> str:
-    cleaned = re.sub(r"[^\w\s]", "", text)
-    return re.sub(r"\s+", " ", cleaned).casefold().strip()
-
-
-def _already_handled(text: str, handled: list[str]) -> bool:
-    folded = _fold(text)
-    if not folded:
-        return False
-    return any(_fold(item) == folded for item in handled)
-
-
 class InterviewPipeline:
-    def __init__(self, emit: Emit) -> None:
+    def __init__(self, emit: Emit, store: SessionStore | None = None) -> None:
         self._emit = emit
+        self._given_store = store
         self._clients = None
         self._chunks: list[bytes] = []
         self._mime_type = "audio/webm"
-        self._handled: list[str] = []
         self._work = asyncio.Lock()
         self._turn = asyncio.Lock()
         self._jobs: set[asyncio.Task[None]] = set()
         self._closed = False
         self._session: InterviewSession | None = None
         self._session_mono: float | None = None
+        self._session_base_ms = 0
         self._listen_mono: float | None = None
         self._prime_task: asyncio.Task[tuple[str, int]] | None = None
         self._prime_bytes = 0
+        self._pending_context: dict[str, str] | None = None
+        self._pending_answer_mode: str | None = None
 
     def session_snapshot(self) -> dict[str, Any] | None:
         if self._session is None:
             return None
-        duration = ms_between(self._session_mono or time.perf_counter(), time.perf_counter())
-        return self._session.snapshot(duration)
+        return self._session.snapshot(self._elapsed_ms())
+
+    def _store(self) -> SessionStore:
+        return self._given_store if self._given_store is not None else get_store()
+
+    def _elapsed_ms(self) -> int:
+        live = ms_between(self._session_mono or time.perf_counter(), time.perf_counter())
+        return self._session_base_ms + live
+
+    def _persist(self) -> None:
+        session = self._session
+        if session is None:
+            return
+        session.duration_ms = self._elapsed_ms()
+        session.updated_at = utc_now()
+        try:
+            self._store().save(session)
+        except Exception:
+            logger.exception("could not persist interview session")
 
     async def start(self, mime_type: str | None) -> None:
         error = readiness_error()
@@ -79,7 +90,7 @@ class InterviewPipeline:
                     await asyncio.to_thread(ensure_model)
             await self._ensure_session()
             await self._emit(
-                {"type": "status", "state": "listening", "detail": "Mic live · capturing question"}
+                {"type": "status", "state": "listening", "detail": "Capturing question"}
             )
 
     async def prime(self) -> None:
@@ -92,7 +103,9 @@ class InterviewPipeline:
         if self._prime_task and not self._prime_task.done():
             return
         self._prime_bytes = len(audio)
-        self._prime_task = asyncio.create_task(self._transcribe_snapshot(audio, mime_type))
+        self._prime_task = asyncio.create_task(
+            self._transcribe_snapshot(audio, mime_type, emit_partial=True)
+        )
         await self._emit({"type": "status", "state": "thinking", "detail": "Transcribing…"})
 
     def add_audio(self, payload: bytes) -> None:
@@ -150,6 +163,18 @@ class InterviewPipeline:
         async with self._work:
             await self._finish_session()
 
+    async def start_new_session(self) -> None:
+        await self._await_jobs()
+        async with self._work:
+            if self._session is not None and self._session.active:
+                await self._finish_session(emit_summary=False)
+            else:
+                self._session = None
+                self._session_mono = None
+                self._session_base_ms = 0
+                self._archive_resumable()
+            await self._open_session(resume=False)
+
     async def close(self) -> None:
         self._closed = True
         pending = self._cancel_prime()
@@ -170,6 +195,98 @@ class InterviewPipeline:
     def _audio_bytes(self) -> bytes:
         return b"".join(self._chunks)
 
+    def _interview_history(self) -> list[tuple[str, str]]:
+        if self._session is None:
+            return []
+        return self._session.recent_qa()
+
+    def _current_answer_mode(self) -> str:
+        if self._session is not None:
+            return normalize_answer_mode(self._session.answer_mode)
+        if self._pending_answer_mode is not None:
+            return normalize_answer_mode(self._pending_answer_mode)
+        return DEFAULT_ANSWER_MODE
+
+    def _copilot_prompt(self, *, source: str) -> str:
+        base = prompt_for_mode(self._current_answer_mode(), source=source)
+        session = self._session
+        if session is not None:
+            return build_system_prompt(base, **session.context_payload())
+        pending = self._pending_context or {}
+        if not any(pending.values()):
+            return base
+        return build_system_prompt(base, **pending)
+
+    def _apply_pending_context(self, session: InterviewSession) -> None:
+        if self._pending_context is not None:
+            session.set_context(self._pending_context)
+            self._pending_context = None
+        if self._pending_answer_mode is not None:
+            session.set_answer_mode(self._pending_answer_mode)
+            self._pending_answer_mode = None
+
+    async def set_context(self, data: dict[str, Any] | None = None, **fields: Any) -> None:
+        payload = normalize_context(data, **fields)
+        session = self._session
+        if session is not None and session.active:
+            session.set_context(payload)
+            self._persist()
+            await self._emit(
+                {
+                    "type": "context_updated",
+                    "context": session.context_payload(),
+                    "session": session.snapshot(self._elapsed_ms()),
+                }
+            )
+            return
+        self._pending_context = payload
+        await self._emit(
+            {
+                "type": "context_updated",
+                "context": payload,
+                "session": self.session_snapshot(),
+            }
+        )
+
+    async def set_answer_mode(self, mode: str | None) -> None:
+        value = normalize_answer_mode(mode)
+        session = self._session
+        if session is not None and session.active:
+            session.set_answer_mode(value)
+            self._persist()
+            await self._emit(
+                {
+                    "type": "answer_mode_updated",
+                    "answer_mode": value,
+                    "session": session.snapshot(self._elapsed_ms()),
+                }
+            )
+            return
+        self._pending_answer_mode = value
+        await self._emit(
+            {
+                "type": "answer_mode_updated",
+                "answer_mode": value,
+                "session": self.session_snapshot(),
+            }
+        )
+
+    def _answered_questions(self) -> list[str]:
+        if self._session is None:
+            return []
+        return [turn.question for turn in self._session.turns if (turn.question or "").strip()]
+
+    async def _emit_skip(self, verdict: ClipVerdict, *, source: str) -> None:
+        logger.info("skip reason=%s text=%s", verdict.reason, (verdict.text or "")[:180])
+        await self._emit(verdict.as_event(source=source))
+        await self._emit({"type": "status", "state": "ready", "detail": verdict.detail})
+
+    async def _emit_partial_question(self, text: str, *, source: str = "spoken") -> None:
+        question = (text or "").strip()
+        if not question:
+            return
+        await self._emit({"type": "partial_question", "text": question, "source": source})
+
     def _cancel_prime(self) -> asyncio.Task[tuple[str, int]] | None:
         task = self._prime_task
         self._prime_task = None
@@ -182,9 +299,46 @@ class InterviewPipeline:
     async def _ensure_session(self) -> None:
         if self._session is not None and self._session.active:
             return
+        await self._open_session(resume=True)
+
+    def _archive_resumable(self) -> None:
+        leftover = self._store().resumable()
+        if leftover is None:
+            return
+        leftover.active = False
+        leftover.ended_at = leftover.ended_at or utc_now()
+        leftover.updated_at = utc_now()
+        try:
+            self._store().save(leftover)
+        except Exception:
+            logger.exception("could not archive leftover interview session")
+
+    async def _open_session(self, *, resume: bool) -> None:
+        if resume:
+            resumed = self._store().resumable()
+            if resumed is not None:
+                self._session = resumed
+                self._apply_pending_context(resumed)
+                self._session_base_ms = resumed.duration_ms
+                self._session_mono = time.perf_counter()
+                self._persist()
+                await self._emit(
+                    {
+                        "type": "session_resume",
+                        "started_at": self._session.started_at,
+                        "session": self._session.snapshot(self._elapsed_ms()),
+                    }
+                )
+                return
+        else:
+            self._archive_resumable()
+        prior = self._store().latest()
         self._session = InterviewSession()
+        self._session.copy_context_from(prior)
+        self._apply_pending_context(self._session)
+        self._session_base_ms = 0
         self._session_mono = time.perf_counter()
-        self._handled.clear()
+        self._persist()
         await self._emit(
             {
                 "type": "session_start",
@@ -193,13 +347,22 @@ class InterviewPipeline:
             }
         )
 
-    async def _transcribe_snapshot(self, audio: bytes, mime_type: str) -> tuple[str, int]:
+    async def _transcribe_snapshot(
+        self,
+        audio: bytes,
+        mime_type: str,
+        *,
+        emit_partial: bool = False,
+    ) -> tuple[str, int]:
         if self._clients is None:
             return "", 0
         started = time.perf_counter()
         text = await transcribe_audio(self._clients.stt, audio, mime_type)
         elapsed = ms_between(started, time.perf_counter())
-        return (text or "").strip(), elapsed
+        transcript = (text or "").strip()
+        if emit_partial:
+            await self._emit_partial_question(transcript)
+        return transcript, elapsed
 
     async def _commit_clip(
         self,
@@ -231,37 +394,41 @@ class InterviewPipeline:
                 return
 
             logger.info("transcript=%s reused=%s stt_ms=%s", transcript[:180], reused, stt_ms)
-            if _already_handled(transcript, self._handled):
-                await self._emit({"type": "status", "state": "ready", "detail": "Paused"})
+            await self._emit_partial_question(transcript)
+            verdict = classify_clip(transcript, self._answered_questions())
+            if verdict.action == "skip":
+                await self._emit_skip(verdict, source="spoken")
                 return
 
-            streamed_question = False
-            await self._emit({"type": "question", "text": transcript, "valid": True})
+            question = verdict.text or transcript
+            await self._emit({"type": "question", "text": question, "valid": True, "source": "spoken", "answer_mode": self._current_answer_mode()})
             await self._emit({"type": "status", "state": "thinking", "detail": "Drafting answer"})
 
             llm_first_ms = 0
             llm_started = time.perf_counter()
-
-            async def on_question(text: str) -> None:
-                nonlocal streamed_question
-                if streamed_question or _already_handled(text, self._handled):
-                    return
-                streamed_question = True
-                await self._emit({"type": "question", "text": text, "valid": True})
+            mode = self._current_answer_mode()
 
             async def on_answer(text: str) -> None:
                 nonlocal llm_first_ms
                 if not llm_first_ms:
                     llm_first_ms = ms_between(llm_started, time.perf_counter())
-                await self._emit({"type": "answer_delta", "text": text})
+                await self._emit(
+                    {
+                        "type": "answer_delta",
+                        "text": text,
+                        "source": "spoken",
+                        "answer_mode": mode,
+                    }
+                )
 
             try:
                 turn = await copilot_turn(
                     self._clients.chat,
-                    transcript,
-                    self._handled,
-                    on_question=on_question,
+                    question,
                     on_answer=on_answer,
+                    history=self._interview_history(),
+                    system_prompt=self._copilot_prompt(source="spoken"),
+                    max_tokens=max_tokens_for_mode(mode, source="spoken"),
                 )
             except Exception:
                 logger.exception("llm turn failed")
@@ -269,36 +436,46 @@ class InterviewPipeline:
                 await self._emit({"type": "status", "state": "ready", "detail": "Paused"})
                 return
             llm_ms = ms_between(llm_started, time.perf_counter())
+            turn.question = question
             await self._publish(
                 turn,
-                transcript,
+                question,
                 listen_ms=listen_ms,
                 stt_ms=stt_ms,
                 llm_ms=llm_ms,
                 llm_first_ms=llm_first_ms or llm_ms,
                 stt_reused=reused,
-                streamed_question=streamed_question,
+                streamed_question=True,
+                source="spoken",
             )
 
     async def _commit_typed(self, question: str) -> None:
         async with self._turn:
             if self._closed:
                 return
+            await self._ensure_session()
+            verdict = classify_clip(question, self._answered_questions(), typed=True)
+            if verdict.action == "skip":
+                await self._emit_skip(verdict, source="typed")
+                return
             if self._clients is None:
                 self._clients = new_clients()
-            await self._ensure_session()
-            if _already_handled(question, self._handled):
-                await self._emit({"type": "status", "state": "ready", "detail": "Already answered"})
-                return
 
-            await self._emit({"type": "question", "text": question, "valid": True, "source": "typed"})
+            await self._emit(
+                {
+                    "type": "question",
+                    "text": question,
+                    "valid": True,
+                    "source": "typed",
+                    "answer_mode": self._current_answer_mode(),
+                }
+            )
             await self._emit(
                 {"type": "status", "state": "thinking", "detail": "Drafting typed question"}
             )
 
-            token_limit = 2048
-            if LLM_MAX_TOKENS is not None:
-                token_limit = max(LLM_MAX_TOKENS, 2048)
+            mode = self._current_answer_mode()
+            token_limit = max_tokens_for_mode(mode, source="typed")
 
             llm_first_ms = 0
             llm_started = time.perf_counter()
@@ -307,15 +484,22 @@ class InterviewPipeline:
                 nonlocal llm_first_ms
                 if not llm_first_ms:
                     llm_first_ms = ms_between(llm_started, time.perf_counter())
-                await self._emit({"type": "answer_delta", "text": text})
+                await self._emit(
+                    {
+                        "type": "answer_delta",
+                        "text": text,
+                        "source": "typed",
+                        "answer_mode": mode,
+                    }
+                )
 
             try:
                 turn = await copilot_turn(
                     self._clients.chat,
                     question,
-                    self._handled,
                     on_answer=on_answer,
-                    system_prompt=TYPED_PROMPT,
+                    history=self._interview_history(),
+                    system_prompt=self._copilot_prompt(source="typed"),
                     max_tokens=token_limit,
                 )
             except Exception:
@@ -335,6 +519,7 @@ class InterviewPipeline:
                 llm_first_ms=llm_first_ms or llm_ms,
                 stt_reused=False,
                 streamed_question=True,
+                source="typed",
             )
 
     async def _resolve_transcript(
@@ -381,29 +566,70 @@ class InterviewPipeline:
         llm_first_ms: int,
         stt_reused: bool,
         streamed_question: bool,
+        source: str = "spoken",
     ) -> None:
-        text = (turn.question or turn.latest_speech or transcript).strip()
+        text = (transcript or turn.question or turn.latest_speech or "").strip()
         answer = (turn.answer or "").strip()
         if not text:
             await self._emit({"type": "status", "state": "ready", "detail": "Paused"})
             return
-        if _already_handled(text, self._handled):
-            await self._emit({"type": "status", "state": "ready", "detail": "Paused"})
+        if getattr(turn, "stage", "") == "not_a_question":
+            await self._emit_skip(
+                ClipVerdict(
+                    action="skip",
+                    reason="not_a_question",
+                    text=text,
+                    detail=DETAILS["not_a_question"],
+                    retryable=True,
+                ),
+                source=source,
+            )
             return
 
-        self._handled.append(text)
-        if len(self._handled) > 40:
-            self._handled = self._handled[-40:]
-
+        mode = self._current_answer_mode()
+        points = extract_talking_points(answer).as_dict() if answer else None
         if not streamed_question:
-            await self._emit({"type": "question", "text": text, "valid": True})
+            await self._emit(
+                {
+                    "type": "question",
+                    "text": text,
+                    "valid": True,
+                    "source": source,
+                    "answer_mode": mode,
+                }
+            )
         if answer:
-            await self._emit({"type": "answer", "text": answer})
-            await self._emit({"type": "qa", "question": text, "answer": answer, "valid": True})
+            await self._emit(
+                {
+                    "type": "answer",
+                    "text": answer,
+                    "source": source,
+                    "answer_mode": mode,
+                    "talking_points": points,
+                }
+            )
+            await self._emit(
+                {
+                    "type": "qa",
+                    "question": text,
+                    "answer": answer,
+                    "valid": True,
+                    "source": source,
+                    "answer_mode": mode,
+                    "talking_points": points,
+                }
+            )
             logger.info("answer=%s", answer[:180])
         else:
             await self._emit(
-                {"type": "qa", "question": text, "answer": "(no answer drafted)", "valid": True}
+                {
+                    "type": "qa",
+                    "question": text,
+                    "answer": "(no answer drafted)",
+                    "valid": True,
+                    "source": source,
+                    "answer_mode": mode,
+                }
             )
 
         record = TurnRecord(
@@ -416,36 +642,41 @@ class InterviewPipeline:
             llm_first_ms=llm_first_ms,
             total_ms=stt_ms + llm_ms,
             stt_reused=stt_reused,
+            source=source,
+            answer_mode=mode,
         )
         if self._session is not None:
             self._session.add_turn(record)
-            duration = ms_between(self._session_mono or time.perf_counter(), time.perf_counter())
+            self._persist()
             await self._emit(
                 {
                     "type": "turn_stats",
                     **record.as_dict(),
-                    "session": self._session.snapshot(duration),
+                    "session": self._session.snapshot(self._elapsed_ms()),
                 }
             )
         await self._emit(
             {"type": "status", "state": "ready", "detail": "Paused · listen for the next question"}
         )
 
-    async def _finish_session(self) -> None:
+    async def _finish_session(self, *, emit_summary: bool = True) -> None:
         session = self._session
         if session is None or not session.active:
             return
         session.active = False
         session.ended_at = utc_now()
-        duration = ms_between(self._session_mono or time.perf_counter(), time.perf_counter())
-        await self._emit(
-            {
-                "type": "session_summary",
-                "started_at": session.started_at,
-                "ended_at": session.ended_at,
-                "session": session.snapshot(duration),
-            }
-        )
+        duration = self._elapsed_ms()
+        session.duration_ms = duration
+        self._persist()
+        if emit_summary:
+            await self._emit(
+                {
+                    "type": "session_summary",
+                    "started_at": session.started_at,
+                    "ended_at": session.ended_at,
+                    "session": session.snapshot(duration),
+                }
+            )
         self._session = None
         self._session_mono = None
-        self._handled.clear()
+        self._session_base_ms = 0

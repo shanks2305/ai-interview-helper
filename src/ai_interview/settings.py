@@ -119,6 +119,8 @@ STT_MODEL = _first(
     "OPENAI_TRANSCRIBE_MODEL",
     default=_stt_preset.default_stt_model,
 )
+STT_DEVICE = _first("STT_DEVICE", default="auto").lower()
+STT_COMPUTE_TYPE = _first("STT_COMPUTE_TYPE").lower()
 
 _temperature_raw = os.getenv("LLM_TEMPERATURE", "0.3")
 LLM_TEMPERATURE = None if _temperature_raw.strip() == "" else float(_temperature_raw)

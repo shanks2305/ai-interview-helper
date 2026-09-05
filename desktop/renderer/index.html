@@ -13,99 +13,111 @@
   <body>
     <div class="app">
       <header class="topbar">
-        <p class="mark">AI Interview</p>
+        <p class="mark">Capture</p>
         <p id="status" class="status" data-state="checking">Checking API</p>
       </header>
 
       <main class="stage">
-        <section class="intro" id="intro">
-          <p class="kicker">Mic</p>
-          <h1>Listen here. Read Q&amp;A in the browser.</h1>
-          <p class="lede">
-            Hold listen while the interviewer asks. Pause when they finish —
-            that clip is the question. The live page shows Q&amp;A and a live
-            dashboard; ending the session opens the full recap dashboard.
+        <div class="capture-card" id="capture-card">
+          <label class="field">
+            <span>Audio source</span>
+            <select id="capture-mode">
+              <option value="both">Mic + meeting</option>
+              <option value="meeting">Meeting only</option>
+              <option value="mic">Microphone only</option>
+            </select>
+          </label>
+          <label class="field" id="mic-device-field">
+            <span>Microphone</span>
+            <select id="mic-device">
+              <option value="">System default</option>
+            </select>
+          </label>
+          <label class="field" id="meeting-source-field">
+            <span>Meeting source</span>
+            <select id="meeting-source">
+              <option value="auto">Auto (system, then loopback)</option>
+              <option value="system">System / tab audio</option>
+            </select>
+          </label>
+          <p class="audio-hint" id="audio-hint">
+            Meeting audio is the interviewer in Zoom, Meet, or Teams.
           </p>
-          <p class="shortcut-hint">
-            Global shortcut
-            <kbd id="listen-shortcut">⌘⇧L</kbd>
-            toggles listen / pause. Green means capturing; grey means idle.
+          <div class="calibrate" id="calibrate">
+            <div class="level-row" id="level-mic-row" data-band="silent">
+              <span>Mic</span>
+              <div class="level" aria-hidden="true">
+                <span id="level-mic-fill" class="level-fill"></span>
+              </div>
+              <span id="level-mic-status" class="level-status" aria-live="polite">Silent</span>
+            </div>
+            <div class="level-row" id="level-meeting-row" data-band="silent" hidden>
+              <span>Meeting</span>
+              <div class="level" aria-hidden="true">
+                <span id="level-meeting-fill" class="level-fill"></span>
+              </div>
+              <span id="level-meeting-status" class="level-status" aria-live="polite">Silent</span>
+            </div>
+            <p class="audio-hint" id="level-hint" aria-live="polite">
+              Test the input before you listen so Whisper sees a clean signal.
+            </p>
+            <label class="field gain-field">
+              <span>Input gain <strong id="gain-value">1.0×</strong></span>
+              <input
+                id="input-gain"
+                type="range"
+                min="0.4"
+                max="3"
+                step="0.1"
+                value="1"
+                aria-valuemin="0.4"
+                aria-valuemax="3"
+              />
+            </label>
+            <button id="test-input" type="button" class="ghost">Test input</button>
+          </div>
+        </div>
+
+        <section class="idle" id="intro">
+          <p class="lede">
+            Listen here. Questions and answers stay on the live page.
           </p>
           <div class="actions">
             <button id="start" type="button" disabled>Listen</button>
-            <button id="open-live" type="button" class="ghost">Open live dashboard</button>
+            <button id="open-live" type="button" class="ghost">Open live page</button>
           </div>
-          <form class="ask-card intro-ask" id="intro-ask-form">
-            <p class="kicker">Or type a question</p>
-            <p class="ask-hint">Paste a coding problem without using the mic.</p>
-            <textarea
-              id="intro-ask-input"
-              rows="4"
-              placeholder="Paste the problem, constraints, and examples…"
-            ></textarea>
-            <div class="ask-actions">
-              <button type="submit" id="intro-ask-submit">Ask</button>
-            </div>
-          </form>
+          <p class="shortcut-hint">
+            <kbd id="listen-shortcut">⌘⇧L</kbd>
+            listen / pause from anywhere
+          </p>
         </section>
 
         <section class="room" id="room" hidden>
           <div class="mic-bar">
             <div class="mic-meta">
               <span id="rec-dot" class="rec-dot" data-live="false"></span>
-              <p id="mic-label" class="mic-label">Mic idle</p>
-              <p id="timer" class="timer">00:00</p>
+              <div>
+                <p id="mic-label" class="mic-label">Audio idle</p>
+                <p id="timer" class="timer">00:00</p>
+              </div>
             </div>
-            <div class="level" aria-hidden="true">
-              <span id="level-fill" class="level-fill"></span>
-            </div>
-            <button id="stop" type="button" class="ghost">Pause</button>
+          </div>
+          <div class="actions">
+            <button id="stop" type="button">Pause</button>
             <button id="end-session" type="button" class="ghost">End session</button>
           </div>
-          <p class="room-hint">
-            Pause when the question ends. Live Q&amp;A updates on
-            <button id="open-live-room" type="button" class="text-link">the live page</button>.
-            End the session to open the dashboard.
-          </p>
-          <p id="session-stats" class="session-stats" hidden></p>
-          <form class="ask-card" id="ask-form">
-            <p class="kicker">Typed question</p>
-            <p class="ask-hint">Paste a coding problem that was not asked out loud.</p>
-            <textarea
-              id="ask-input"
-              rows="4"
-              placeholder="Paste the problem, constraints, and examples…"
-            ></textarea>
-            <div class="ask-actions">
-              <button type="submit" id="ask-submit">Ask</button>
-              <span class="ask-shortcut">⌘ / Ctrl + Enter</span>
-            </div>
-          </form>
+          <button id="open-live-room" type="button" class="text-link">
+            Open live page
+          </button>
         </section>
 
         <p id="error" class="error" hidden></p>
 
-        <section class="recap" id="recap" hidden>
-          <p class="kicker">Session dashboard</p>
-          <h2 id="recap-title">Interview recap</h2>
-          <p id="recap-summary" class="recap-summary"></p>
-          <div class="stat-cards" id="recap-stats" hidden></div>
-          <div class="table-wrap">
-            <table class="recap-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Question</th>
-                  <th>Listen</th>
-                  <th>Answer</th>
-                </tr>
-              </thead>
-              <tbody id="recap-body"></tbody>
-            </table>
-          </div>
+        <section class="done" id="done" hidden>
+          <p class="lede">Session ended. Recap is on the live page.</p>
           <div class="actions">
-            <button id="new-session" type="button">Listen again</button>
-            <button id="open-live-recap" type="button" class="ghost">Open live dashboard</button>
+            <button id="open-live-done" type="button">Open recap</button>
+            <button id="new-session" type="button" class="ghost">Listen again</button>
           </div>
         </section>
       </main>

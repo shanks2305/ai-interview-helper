@@ -43,3 +43,6 @@ Thumbs.db
 
 # Docker (local overrides)
 docker-compose.override.yml
+
+# Local interview sessions
+/data/

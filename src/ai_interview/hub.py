@@ -5,6 +5,10 @@ from typing import Any
 
 from fastapi import WebSocket
 
+from .modes import DEFAULT_ANSWER_MODE, answer_mode_catalog, normalize_answer_mode
+from .session import InterviewSession, empty_context, normalize_context
+from .talking_points import extract_talking_points
+
 
 class LiveHub:
     def __init__(self) -> None:
@@ -13,8 +17,12 @@ class LiveHub:
         self.listening = False
         self.question = ""
         self.answer = ""
+        self.source = ""
         self.pairs: list[dict[str, str]] = []
         self.session: dict[str, Any] | None = None
+        self.context: dict[str, str] = empty_context()
+        self.answer_mode = DEFAULT_ANSWER_MODE
+        self.talking_points: dict[str, Any] | None = None
         self._pipeline: Any = None
         self._standalone: Any = None
 
@@ -24,8 +32,13 @@ class LiveHub:
             "listening": self.listening,
             "question": self.question,
             "answer": self.answer,
+            "source": self.source,
             "pairs": list(self.pairs),
             "session": self.session,
+            "context": dict(self.context),
+            "answer_mode": self.answer_mode,
+            "answer_modes": answer_mode_catalog(),
+            "talking_points": dict(self.talking_points) if self.talking_points else None,
         }
 
     async def subscribe(self, websocket: WebSocket) -> None:
@@ -45,28 +58,145 @@ class LiveHub:
             return
         if kind == "partial_question":
             self.question = event.get("text") or self.question
+            self.answer = ""
+            self.talking_points = None
+            if event.get("source"):
+                self.source = event.get("source")
             return
         if kind == "question":
             self.question = event.get("text") or ""
             self.answer = ""
+            self.talking_points = None
+            self.source = event.get("source") or "spoken"
+            self._set_mode(event.get("answer_mode"))
             return
         if kind in {"answer", "answer_delta"}:
             self.answer = event.get("text") or ""
+            if event.get("source"):
+                self.source = event.get("source")
+            self._set_mode(event.get("answer_mode"))
+            self._refresh_talking_points(event.get("talking_points"), self.answer)
             return
         if kind == "qa":
             self.question = event.get("question") or ""
             self.answer = event.get("answer") or ""
-            pair = {"question": self.question, "answer": self.answer or "(no answer)"}
+            self.source = event.get("source") or self.source or "spoken"
+            self._set_mode(event.get("answer_mode"))
+            self._refresh_talking_points(event.get("talking_points"), self.answer)
+            pair = {
+                "question": self.question,
+                "answer": self.answer or "(no answer)",
+                "source": self.source,
+                "answer_mode": self.answer_mode,
+            }
             if not self.pairs or self.pairs[0] != pair:
                 self.pairs.insert(0, pair)
                 self.pairs = self.pairs[:40]
             return
-        if kind in {"session_start", "turn_stats", "session_summary"}:
+        if kind == "skip":
+            if not self.answer:
+                self.question = event.get("text") or self.question
+                self.answer = event.get("detail") or self.answer
+                if event.get("source"):
+                    self.source = event.get("source")
+            return
+        if kind in {"session_start", "session_resume", "turn_stats", "session_summary"}:
             self.session = event.get("session") or self.session
+            self._sync_context(self.session)
+            self._sync_mode(self.session)
             if kind == "session_start":
                 self.pairs = []
                 self.question = ""
                 self.answer = ""
+                self.source = ""
+                self.talking_points = None
+            elif kind == "session_resume":
+                self._apply_session_view(self.session)
+            return
+        if kind == "context_updated":
+            if event.get("session"):
+                self.session = event.get("session")
+            self.context = normalize_context(event.get("context") or self.session)
+            return
+        if kind == "answer_mode_updated":
+            if event.get("session"):
+                self.session = event.get("session")
+            self._set_mode(event.get("answer_mode"))
+            self._sync_mode(self.session)
+            return
+
+    def restore(self, session: InterviewSession | dict[str, Any] | None) -> None:
+        if session is None:
+            return
+        payload = session.snapshot() if isinstance(session, InterviewSession) else dict(session)
+        self.session = payload
+        self._sync_context(payload)
+        self._sync_mode(payload)
+        self._apply_session_view(payload)
+
+    def _sync_context(self, session: dict[str, Any] | None) -> None:
+        if not session:
+            return
+        if "context" not in session and not any(
+            str(session.get(key) or "").strip()
+            for key in ("role", "company", "job_description", "resume")
+        ):
+            return
+        self.context = normalize_context(session)
+
+    def _set_mode(self, value: Any) -> None:
+        if value:
+            self.answer_mode = normalize_answer_mode(str(value))
+
+    def _sync_mode(self, session: dict[str, Any] | None) -> None:
+        if not session:
+            return
+        mode = session.get("answer_mode")
+        if mode:
+            self.answer_mode = normalize_answer_mode(str(mode))
+
+    def _refresh_talking_points(self, payload: Any, answer: str) -> None:
+        if isinstance(payload, dict) and payload.get("bullets"):
+            bullets = [str(item).strip() for item in payload.get("bullets") or [] if str(item).strip()]
+            self.talking_points = {
+                "bullets": bullets[:5],
+                "example": str(payload.get("example") or "").strip(),
+            }
+            return
+        text = (answer or "").strip()
+        if not text or text.startswith("Skipped") or text.startswith("Already answered"):
+            self.talking_points = None
+            return
+        points = extract_talking_points(text)
+        self.talking_points = points.as_dict() if points.bullets else None
+
+    def _apply_session_view(self, session: dict[str, Any] | None) -> None:
+        turns = (session or {}).get("turns") or []
+        pairs: list[dict[str, str]] = []
+        for turn in reversed(turns[-40:]):
+            if not isinstance(turn, dict):
+                continue
+            pairs.append(
+                {
+                    "question": str(turn.get("question") or ""),
+                    "answer": str(turn.get("answer") or ""),
+                    "source": str(turn.get("source") or "spoken"),
+                    "answer_mode": normalize_answer_mode(str(turn.get("answer_mode") or "")),
+                }
+            )
+        self.pairs = pairs
+        if turns and isinstance(turns[-1], dict):
+            last = turns[-1]
+            self.question = str(last.get("question") or "")
+            self.answer = str(last.get("answer") or "")
+            self.source = str(last.get("source") or "spoken")
+            self._set_mode(last.get("answer_mode") or (session or {}).get("answer_mode"))
+            self._refresh_talking_points(None, self.answer)
+            return
+        self.question = ""
+        self.answer = ""
+        self.source = ""
+        self.talking_points = None
 
     async def publish(self, event: dict[str, Any]) -> None:
         self.apply(event)
@@ -85,10 +215,17 @@ class LiveHub:
 
     def attach_pipeline(self, pipeline: Any) -> None:
         self._pipeline = pipeline
+        if any(self.context.values()) and getattr(pipeline, "_pending_context", None) is None:
+            pipeline._pending_context = dict(self.context)
+        if getattr(pipeline, "_pending_answer_mode", None) is None:
+            pipeline._pending_answer_mode = self.answer_mode
 
     def detach_pipeline(self, pipeline: Any) -> None:
         if self._pipeline is pipeline:
             self._pipeline = None
+
+    async def mark_idle(self) -> None:
+        await self.publish({"type": "status", "state": "idle", "detail": "Audio idle"})
 
     async def submit_ask(self, text: str) -> str | None:
         question = (text or "").strip()
@@ -102,6 +239,35 @@ class LiveHub:
             pipeline = self._standalone
         await pipeline.ask_typed(question)
         return None
+
+    async def submit_context(self, data: dict[str, Any] | None = None, **fields: Any) -> None:
+        payload = normalize_context(data, **fields)
+        pipeline = self._pipeline or self._standalone
+        if pipeline is None:
+            from .pipeline import InterviewPipeline
+
+            self._standalone = InterviewPipeline(self.publish)
+            pipeline = self._standalone
+        await pipeline.set_context(payload)
+
+    async def submit_answer_mode(self, mode: str | None) -> str:
+        pipeline = self._pipeline or self._standalone
+        if pipeline is None:
+            from .pipeline import InterviewPipeline
+
+            self._standalone = InterviewPipeline(self.publish)
+            pipeline = self._standalone
+        await pipeline.set_answer_mode(mode)
+        return self.answer_mode
+
+    async def start_new_session(self) -> None:
+        pipeline = self._pipeline or self._standalone
+        if pipeline is None:
+            from .pipeline import InterviewPipeline
+
+            self._standalone = InterviewPipeline(self.publish)
+            pipeline = self._standalone
+        await pipeline.start_new_session()
 
 
 hub = LiveHub()
