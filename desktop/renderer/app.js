@@ -631,6 +631,8 @@ function handleServerEvent(event) {
   if (type === "session_summary") {
     showPanel("done");
     setStatus("ok", "Session ended");
+    releaseCaptureGraph({ closeContext: false });
+    setLive(false, "Session ended");
     return;
   }
 
@@ -1056,6 +1058,8 @@ async function pauseCapture() {
   setRoomControls();
   stopTimer();
   reportListening(false);
+  setLive(false, "Paused · drafting on live page");
+  setStatus("checking", "Drafting on live page");
   sendJson({ type: "prime" });
   updateCalibrateUi();
 
@@ -1063,8 +1067,6 @@ async function pauseCapture() {
     await stopRecorder(activeRecorder);
     await audioQueue;
     sendJson({ type: "stop" });
-    setLive(false, "Paused · drafting on live page");
-    setStatus("checking", "Drafting on live page");
   } finally {
     listenBusy = false;
     updateCalibrateUi();
@@ -1079,6 +1081,7 @@ async function endSession() {
     await pauseCapture();
   }
   sendJson({ type: "end_session" });
+  releaseCaptureGraph({ closeContext: false });
   setLive(false, "Session ended");
   setStatus("ok", "Session ended");
 }

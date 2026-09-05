@@ -25,6 +25,7 @@ class LiveHub:
         self.talking_points: dict[str, Any] | None = None
         self._pipeline: Any = None
         self._standalone: Any = None
+        self._drafting = False
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -54,12 +55,14 @@ class LiveHub:
         kind = event.get("type")
         if kind == "status":
             state = event.get("state")
-            self.listening = state == "listening"
+            if state != "thinking":
+                self.listening = state == "listening"
             return
         if kind == "partial_question":
             self.question = event.get("text") or self.question
             self.answer = ""
             self.talking_points = None
+            self._drafting = False
             if event.get("source"):
                 self.source = event.get("source")
             return
@@ -67,17 +70,20 @@ class LiveHub:
             self.question = event.get("text") or ""
             self.answer = ""
             self.talking_points = None
+            self._drafting = False
             self.source = event.get("source") or "spoken"
             self._set_mode(event.get("answer_mode"))
             return
         if kind in {"answer", "answer_delta"}:
             self.answer = event.get("text") or ""
+            self._drafting = kind == "answer_delta"
             if event.get("source"):
                 self.source = event.get("source")
             self._set_mode(event.get("answer_mode"))
             self._refresh_talking_points(event.get("talking_points"), self.answer)
             return
         if kind == "qa":
+            self._drafting = False
             self.question = event.get("question") or ""
             self.answer = event.get("answer") or ""
             self.source = event.get("source") or self.source or "spoken"
@@ -94,9 +100,11 @@ class LiveHub:
                 self.pairs = self.pairs[:40]
             return
         if kind == "skip":
-            if not self.answer:
+            if self._drafting or not self.answer:
                 self.question = event.get("text") or self.question
                 self.answer = event.get("detail") or self.answer
+                self.talking_points = None
+                self._drafting = False
                 if event.get("source"):
                     self.source = event.get("source")
             return
@@ -110,6 +118,7 @@ class LiveHub:
                 self.answer = ""
                 self.source = ""
                 self.talking_points = None
+                self._drafting = False
             elif kind == "session_resume":
                 self._apply_session_view(self.session)
             return
@@ -215,14 +224,26 @@ class LiveHub:
 
     def attach_pipeline(self, pipeline: Any) -> None:
         self._pipeline = pipeline
-        if any(self.context.values()) and getattr(pipeline, "_pending_context", None) is None:
-            pipeline._pending_context = dict(self.context)
-        if getattr(pipeline, "_pending_answer_mode", None) is None:
-            pipeline._pending_answer_mode = self.answer_mode
+        seed = getattr(pipeline, "seed_pending", None)
+        if callable(seed):
+            seed(context=dict(self.context), answer_mode=self.answer_mode)
 
     def detach_pipeline(self, pipeline: Any) -> None:
         if self._pipeline is pipeline:
             self._pipeline = None
+        standalone = self._standalone
+        drop = getattr(standalone, "drop_stale_session", None) if standalone is not None else None
+        if callable(drop):
+            drop()
+
+    def _active_pipeline(self) -> Any:
+        pipeline = self._pipeline or self._standalone
+        if pipeline is not None:
+            return pipeline
+        from .pipeline import InterviewPipeline
+
+        self._standalone = InterviewPipeline(self.publish)
+        return self._standalone
 
     async def mark_idle(self) -> None:
         await self.publish({"type": "status", "state": "idle", "detail": "Audio idle"})
@@ -231,43 +252,19 @@ class LiveHub:
         question = (text or "").strip()
         if not question:
             return "Paste a question first."
-        pipeline = self._pipeline or self._standalone
-        if pipeline is None:
-            from .pipeline import InterviewPipeline
-
-            self._standalone = InterviewPipeline(self.publish)
-            pipeline = self._standalone
-        await pipeline.ask_typed(question)
+        await self._active_pipeline().ask_typed(question)
         return None
 
     async def submit_context(self, data: dict[str, Any] | None = None, **fields: Any) -> None:
         payload = normalize_context(data, **fields)
-        pipeline = self._pipeline or self._standalone
-        if pipeline is None:
-            from .pipeline import InterviewPipeline
-
-            self._standalone = InterviewPipeline(self.publish)
-            pipeline = self._standalone
-        await pipeline.set_context(payload)
+        await self._active_pipeline().set_context(payload)
 
     async def submit_answer_mode(self, mode: str | None) -> str:
-        pipeline = self._pipeline or self._standalone
-        if pipeline is None:
-            from .pipeline import InterviewPipeline
-
-            self._standalone = InterviewPipeline(self.publish)
-            pipeline = self._standalone
-        await pipeline.set_answer_mode(mode)
+        await self._active_pipeline().set_answer_mode(mode)
         return self.answer_mode
 
     async def start_new_session(self) -> None:
-        pipeline = self._pipeline or self._standalone
-        if pipeline is None:
-            from .pipeline import InterviewPipeline
-
-            self._standalone = InterviewPipeline(self.publish)
-            pipeline = self._standalone
-        await pipeline.start_new_session()
+        await self._active_pipeline().start_new_session()
 
 
 hub = LiveHub()

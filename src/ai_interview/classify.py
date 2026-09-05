@@ -590,8 +590,13 @@ def _is_duplicate(text: str, previous: list[str]) -> bool:
             extra = larger - smaller
             if smaller and smaller <= larger and not extra:
                 return True
-            if smaller == tokens and smaller <= larger and len(tokens) >= 2:
-                # A shorter restatement / worse capture of a question we already answered.
+            if (
+                smaller == tokens
+                and smaller <= larger
+                and len(tokens) >= 2
+                and len(tokens) >= 0.75 * len(prev_tokens)
+            ):
+                # Near-equal restatement, not a narrower follow-up.
                 return True
     return False
 

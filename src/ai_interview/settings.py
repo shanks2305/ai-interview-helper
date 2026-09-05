@@ -128,10 +128,7 @@ LLM_TEMPERATURE = None if _temperature_raw.strip() == "" else float(_temperature
 _max_tokens_raw = os.getenv("LLM_MAX_TOKENS", "320").strip()
 LLM_MAX_TOKENS = None if _max_tokens_raw == "" else int(_max_tokens_raw)
 
-TRANSCRIBE_INTERVAL_SECONDS = float(os.getenv("TRANSCRIBE_INTERVAL_SECONDS", "1.0"))
 MIN_AUDIO_BYTES = int(os.getenv("MIN_AUDIO_BYTES", "2500"))
-UTTERANCE_STABLE_TICKS = int(os.getenv("UTTERANCE_STABLE_TICKS", "1"))
-MAX_AUDIO_WINDOW_BYTES = int(os.getenv("MAX_AUDIO_WINDOW_BYTES", "80000"))
 
 
 def chat_ready() -> bool:

@@ -27,7 +27,6 @@ from .settings import (
 )
 
 AnswerDelta = Callable[[str], Awaitable[None]]
-QuestionReady = Callable[[str], Awaitable[None]]
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -244,15 +243,12 @@ def _history_messages(history: list[tuple[str, str]] | None) -> list[dict[str, s
 async def copilot_turn(
     client: AsyncOpenAI,
     transcript: str,
-    already_handled: list[str] | None = None,
-    on_question: QuestionReady | None = None,
     on_answer: AnswerDelta | None = None,
     *,
     history: list[tuple[str, str]] | None = None,
     system_prompt: str | None = None,
     max_tokens: int | None = None,
 ) -> CopilotTurn:
-    _ = already_handled, on_question
     token_limit = LLM_MAX_TOKENS if max_tokens is None else max_tokens
     kwargs: dict = {
         "model": LLM_MODEL,
@@ -275,15 +271,23 @@ async def copilot_turn(
     last_answer = ""
     try:
         stream = await client.chat.completions.create(**kwargs)
-        async for chunk in stream:
-            piece = _stream_text(chunk)
-            if not piece:
-                continue
-            raw_parts.append(piece)
-            answer = _visible_answer("".join(raw_parts))
-            if on_answer and answer and answer != last_answer:
-                last_answer = answer
-                await on_answer(answer)
+        try:
+            async for chunk in stream:
+                piece = _stream_text(chunk)
+                if not piece:
+                    continue
+                raw_parts.append(piece)
+                answer = _visible_answer("".join(raw_parts))
+                if on_answer and answer and answer != last_answer:
+                    last_answer = answer
+                    await on_answer(answer)
+        finally:
+            closer = getattr(stream, "aclose", None)
+            if closer is not None:
+                try:
+                    await closer()
+                except Exception:
+                    pass
         raw = "".join(raw_parts).strip()
     except Exception:
         logger.exception("streaming llm failed; retrying without stream")

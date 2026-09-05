@@ -1,6 +1,6 @@
 # AI Interview
 
-Local interview copilot: desktop capture of the interviewer (meeting/system audio) and optional microphone, Whisper STT, LLM answers, live Q&A in the browser.
+**Version 1.0.** Local interview copilot: desktop capture of the interviewer (meeting/system audio) and optional microphone, Whisper STT, LLM answers, live Q&A in the browser.
 
 Requires **Python 3.11+**.
 

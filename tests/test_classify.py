@@ -104,6 +104,17 @@ class ClassifyClipTests(unittest.TestCase):
         verdict = classify_clip("How would you implement a REST API?", answered)
         self.assertEqual(verdict.action, "answer")
 
+    def test_narrower_follow_up_is_not_a_duplicate(self) -> None:
+        answered = ["What is the difference between a process and a thread"]
+        verdict = classify_clip("What is a process?", answered)
+        self.assertEqual(verdict.action, "answer", verdict)
+
+        gc = classify_clip(
+            "Explain garbage collection",
+            ["Explain how garbage collection works in Python"],
+        )
+        self.assertEqual(gc.action, "answer", gc)
+
 
 if __name__ == "__main__":
     unittest.main()

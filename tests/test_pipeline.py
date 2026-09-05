@@ -125,3 +125,48 @@ class PipelineSnapshotTests(unittest.TestCase):
         assert snap is not None
         self.assertEqual(snap["stats"]["questions"], 1)
         self.assertTrue(snap["turns"][0]["stt_reused"])
+
+
+class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from ai_interview.store import SessionStore
+
+        self._dir = tempfile.TemporaryDirectory()
+        self.store = SessionStore(Path(self._dir.name) / "sessions.db")
+        self.events: list[dict] = []
+
+        async def emit(event: dict) -> None:
+            self.events.append(event)
+
+        self.emit = emit
+
+    async def asyncTearDown(self) -> None:
+        self.store.close()
+        self._dir.cleanup()
+
+    async def test_persist_does_not_revive_ended_session(self) -> None:
+        first = InterviewPipeline(self.emit, store=self.store)
+        await first._ensure_session()
+        session_id = first._session.id
+        await first.end_session()
+        self.assertFalse(self.store.get(session_id).active)
+
+        stale = InterviewPipeline(self.emit, store=self.store)
+        stale._session = self.store.get(session_id)
+        stale._session.active = True
+        stale._session_mono = 0.0
+        stale._persist()
+        self.assertFalse(self.store.get(session_id).active)
+        self.assertIsNone(stale._session)
+
+        await stale._ensure_session()
+        self.assertIsNotNone(stale._session)
+        self.assertNotEqual(stale._session.id, session_id)
+
+    async def test_concurrent_ensure_session_opens_one_row(self) -> None:
+        pipeline = InterviewPipeline(self.emit, store=self.store)
+        await asyncio.gather(pipeline._ensure_session(), pipeline._ensure_session())
+        self.assertEqual(len(self.store.list_summaries()), 1)

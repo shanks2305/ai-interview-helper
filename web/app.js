@@ -75,7 +75,10 @@ let libraryQuery = "";
 let libraryTimer = 0;
 let previousView = "idle";
 let viewingSessionId = null;
+let libraryLoadId = 0;
+let libraryOpenId = 0;
 let wakeLock = null;
+let wakeLockGen = 0;
 const COPY_LABEL = "Copy talking points";
 const CONTEXT_STORAGE_KEY = "ai-interview-context";
 const MODE_STORAGE_KEY = "ai-interview-answer-mode";
@@ -234,7 +237,11 @@ function normalizeAnswerMode(value) {
 
 function modeSpec(id) {
   const value = normalizeAnswerMode(id);
-  return answerModes.find((mode) => mode.id === value) || answerModes[1];
+  return (
+    answerModes.find((mode) => mode.id === value) ||
+    answerModes.find((mode) => mode.id === DEFAULT_ANSWER_MODE) ||
+    answerModes[0]
+  );
 }
 
 function modeUsesMarkdown(id) {
@@ -421,10 +428,18 @@ async function requestWakeLock() {
   if (currentView === "ended" || currentView === "library") {
     return;
   }
+  const gen = ++wakeLockGen;
   try {
-    wakeLock = await navigator.wakeLock.request("screen");
+    const lock = await navigator.wakeLock.request("screen");
+    if (gen !== wakeLockGen || currentView === "ended" || currentView === "library") {
+      lock.release().catch(() => {});
+      return;
+    }
+    wakeLock = lock;
     wakeLock.addEventListener("release", () => {
-      wakeLock = null;
+      if (wakeLock === lock) {
+        wakeLock = null;
+      }
     });
   } catch {
     // Unsupported in this context (common on iOS Safari tabs).
@@ -432,6 +447,7 @@ async function requestWakeLock() {
 }
 
 function releaseWakeLock() {
+  wakeLockGen += 1;
   if (!wakeLock) {
     return;
   }
@@ -1084,6 +1100,7 @@ function renderLibrary() {
 
 async function loadLibrary(query = libraryQuery) {
   libraryQuery = query;
+  const requestId = ++libraryLoadId;
   try {
     const params = new URLSearchParams();
     if (query) {
@@ -1096,8 +1113,14 @@ async function loadLibrary(query = libraryQuery) {
       throw new Error("Could not load sessions.");
     }
     const payload = await response.json();
+    if (requestId !== libraryLoadId) {
+      return;
+    }
     libraryItems = payload.sessions || [];
   } catch {
+    if (requestId !== libraryLoadId) {
+      return;
+    }
     libraryItems = [];
   }
   renderLibrary();
@@ -1106,6 +1129,7 @@ async function loadLibrary(query = libraryQuery) {
 
 async function openLibrarySession(sessionId) {
   viewingSessionId = sessionId;
+  const requestId = ++libraryOpenId;
   try {
     const response = await fetch(withToken(`/api/sessions/${sessionId}`), {
       headers: authHeaders(),
@@ -1114,6 +1138,9 @@ async function openLibrarySession(sessionId) {
       throw new Error("Could not open session.");
     }
     const session = await response.json();
+    if (requestId !== libraryOpenId || viewingSessionId !== sessionId) {
+      return;
+    }
     showStoredSession(session);
     if (session.active) {
       setStatus("ok", "Session in progress");
@@ -1121,21 +1148,21 @@ async function openLibrarySession(sessionId) {
       setStatus("ok", "Saved recap");
     }
   } catch {
+    if (requestId !== libraryOpenId || viewingSessionId !== sessionId) {
+      return;
+    }
     setStatus("down", "Could not open session");
   }
 }
 
 function applySnapshot(event) {
   const incoming = event.session;
-  const liveTakeover = Boolean(event.listening || incoming?.active);
-  if (currentView === "library" && !liveTakeover) {
-    seedContext(event);
-    seedAnswerMode(event);
-    setStatus(event.listening ? "ok" : "checking", event.listening ? "Listening" : "Waiting");
-    loadLibrary();
-    return;
-  }
-  if (viewingSessionId && incoming?.id && incoming.id !== viewingSessionId && !liveTakeover) {
+  const liveTakeover = Boolean(event.listening);
+  const keepStoredView =
+    !liveTakeover &&
+    (currentView === "library" ||
+      (Boolean(viewingSessionId) && (!incoming?.id || incoming.id !== viewingSessionId)));
+  if (keepStoredView) {
     seedContext(event);
     seedAnswerMode(event);
     setStatus(event.listening ? "ok" : "checking", event.listening ? "Listening" : "Waiting");
@@ -1227,7 +1254,8 @@ function handleEvent(event) {
     if (state === "idle") {
       setStatus("checking", "Waiting");
     } else if (state === "thinking") {
-      setStatus("checking", "Drafting");
+      const detail = event.detail || "";
+      setStatus("checking", /transcrib/i.test(detail) ? "Hearing question" : "Drafting");
     } else if (state === "ready") {
       setStatus("ok", readyStatusLabel(event.detail));
     } else {
@@ -1276,7 +1304,9 @@ function handleEvent(event) {
     updateAnswerTag();
     if (event.valid === false) {
       prependPair(current.question, current.answer, current.source, current.answer_mode);
-      current = { question: "", answer: "", source: "", answer_mode: currentAnswerMode, talking_points: null };
+      setCurrent("", "", "", currentAnswerMode);
+      setQuestionText("");
+      setAnswerText("");
       updateCopyButton();
       updateAnswerTag();
     }
@@ -1328,8 +1358,11 @@ function handleEvent(event) {
     return;
   }
   if (type === "error") {
-    setAnswerText(event.message || "The interview stream reported an error.");
+    const message = event.message || "The interview stream reported an error.";
     setStatus("down", "Error");
+    if (!current.answer || current.answer === "Drafting…" || isSkipAnswer(current.answer)) {
+      setAnswerText(message);
+    }
   }
 }
 

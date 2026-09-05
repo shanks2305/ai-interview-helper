@@ -54,6 +54,34 @@ class HubSkipTests(unittest.TestCase):
         self.assertEqual(hub.snapshot()["answer"], "")
 
 
+class HubStatusTests(unittest.TestCase):
+    def test_thinking_does_not_clear_listening(self) -> None:
+        hub = LiveHub()
+        hub.apply({"type": "status", "state": "listening", "detail": "Capturing question"})
+        self.assertTrue(hub.listening)
+        hub.apply({"type": "status", "state": "thinking", "detail": "Transcribing…"})
+        self.assertTrue(hub.listening)
+        hub.apply({"type": "status", "state": "ready", "detail": "Paused"})
+        self.assertFalse(hub.listening)
+
+    def test_skip_clears_streamed_draft(self) -> None:
+        hub = LiveHub()
+        hub.apply({"type": "question", "text": "thanks everyone", "source": "spoken"})
+        hub.apply({"type": "answer_delta", "text": "You're welcome.", "source": "spoken"})
+        hub.apply(
+            {
+                "type": "skip",
+                "reason": "not_a_question",
+                "text": "thanks everyone",
+                "detail": "Skipped · not a question",
+                "retryable": True,
+                "source": "spoken",
+            }
+        )
+        self.assertEqual(hub.answer, "Skipped · not a question")
+        self.assertFalse(hub._drafting)
+
+
 class HubRestoreTests(unittest.TestCase):
     def test_restore_sets_snapshot_pairs(self) -> None:
         from ai_interview.session import InterviewSession, TurnRecord

@@ -28,6 +28,7 @@ class InterviewPipeline:
         self._chunks: list[bytes] = []
         self._mime_type = "audio/webm"
         self._work = asyncio.Lock()
+        self._session_gate = asyncio.Lock()
         self._turn = asyncio.Lock()
         self._jobs: set[asyncio.Task[None]] = set()
         self._closed = False
@@ -52,10 +53,46 @@ class InterviewPipeline:
         live = ms_between(self._session_mono or time.perf_counter(), time.perf_counter())
         return self._session_base_ms + live
 
+    def _forget_session(self) -> None:
+        self._session = None
+        self._session_mono = None
+        self._session_base_ms = 0
+
+    def _session_still_live(self) -> bool:
+        session = self._session
+        if session is None or not session.active:
+            return False
+        stored = self._store().get(session.id)
+        if stored is not None and not stored.active:
+            self._forget_session()
+            return False
+        return True
+
+    def drop_stale_session(self) -> None:
+        self._session_still_live()
+
+    def seed_pending(
+        self,
+        *,
+        context: dict[str, str] | None = None,
+        answer_mode: str | None = None,
+    ) -> None:
+        if context and any(str(value or "").strip() for value in context.values()):
+            if self._pending_context is None:
+                self._pending_context = dict(context)
+        if answer_mode is not None and self._pending_answer_mode is None:
+            self._pending_answer_mode = normalize_answer_mode(answer_mode)
+
     def _persist(self) -> None:
         session = self._session
         if session is None:
             return
+        if session.active:
+            stored = self._store().get(session.id)
+            if stored is not None and not stored.active:
+                logger.info("session %s already ended elsewhere; not reviving", session.id)
+                self._forget_session()
+                return
         session.duration_ms = self._elapsed_ms()
         session.updated_at = utc_now()
         try:
@@ -161,19 +198,19 @@ class InterviewPipeline:
     async def end_session(self) -> None:
         await self._await_jobs()
         async with self._work:
-            await self._finish_session()
+            async with self._session_gate:
+                await self._finish_session()
 
     async def start_new_session(self) -> None:
         await self._await_jobs()
         async with self._work:
-            if self._session is not None and self._session.active:
-                await self._finish_session(emit_summary=False)
-            else:
-                self._session = None
-                self._session_mono = None
-                self._session_base_ms = 0
-                self._archive_resumable()
-            await self._open_session(resume=False)
+            async with self._session_gate:
+                if self._session is not None and self._session.active:
+                    await self._finish_session(emit_summary=False)
+                else:
+                    self._forget_session()
+                    self._archive_resumable()
+                await self._open_session(resume=False)
 
     async def close(self) -> None:
         self._closed = True
@@ -185,10 +222,11 @@ class InterviewPipeline:
                 pass
         await self._await_jobs()
         async with self._work:
-            await self._finish_session()
-            clients = self._clients
-            self._clients = None
-            self._chunks.clear()
+            async with self._session_gate:
+                await self._finish_session()
+                clients = self._clients
+                self._clients = None
+                self._chunks.clear()
         if clients is not None:
             await clients.close()
 
@@ -227,8 +265,8 @@ class InterviewPipeline:
 
     async def set_context(self, data: dict[str, Any] | None = None, **fields: Any) -> None:
         payload = normalize_context(data, **fields)
-        session = self._session
-        if session is not None and session.active:
+        session = self._session if self._session_still_live() else None
+        if session is not None:
             session.set_context(payload)
             self._persist()
             await self._emit(
@@ -250,8 +288,8 @@ class InterviewPipeline:
 
     async def set_answer_mode(self, mode: str | None) -> None:
         value = normalize_answer_mode(mode)
-        session = self._session
-        if session is not None and session.active:
+        session = self._session if self._session_still_live() else None
+        if session is not None:
             session.set_answer_mode(value)
             self._persist()
             await self._emit(
@@ -297,9 +335,10 @@ class InterviewPipeline:
         return None
 
     async def _ensure_session(self) -> None:
-        if self._session is not None and self._session.active:
-            return
-        await self._open_session(resume=True)
+        async with self._session_gate:
+            if self._session_still_live():
+                return
+            await self._open_session(resume=True)
 
     def _archive_resumable(self) -> None:
         leftover = self._store().resumable()
@@ -677,6 +716,4 @@ class InterviewPipeline:
                     "session": session.snapshot(duration),
                 }
             )
-        self._session = None
-        self._session_mono = None
-        self._session_base_ms = 0
+        self._forget_session()
