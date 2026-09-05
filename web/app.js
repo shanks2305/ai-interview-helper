@@ -17,6 +17,8 @@ const libraryEl = document.getElementById("library");
 const libraryListEl = document.getElementById("library-list");
 const libraryEmptyEl = document.getElementById("library-empty");
 const librarySearchEl = document.getElementById("library-search");
+const libraryCountEl = document.getElementById("library-count");
+const libraryBtn = document.getElementById("library-btn");
 
 const askCardEl = document.getElementById("ask-card");
 const askFormEl = document.getElementById("ask-form");
@@ -71,6 +73,8 @@ let current = { question: "", answer: "", source: "", answer_mode: "", talking_p
 let libraryItems = [];
 let libraryQuery = "";
 let libraryTimer = 0;
+let previousView = "idle";
+let viewingSessionId = null;
 let wakeLock = null;
 const COPY_LABEL = "Copy talking points";
 const CONTEXT_STORAGE_KEY = "ai-interview-context";
@@ -347,16 +351,32 @@ function setStatus(state, label) {
 }
 
 function setView(view) {
+  if (view !== "library") {
+    previousView = view;
+  }
   currentView = view;
   document.body.dataset.view = view;
   const ended = view === "ended";
-  liveStageEl.hidden = false;
+  const library = view === "library";
+  liveStageEl.hidden = library;
   dashboardEl.hidden = !ended;
+  if (modeBarEl) {
+    modeBarEl.hidden = library;
+  }
   if (libraryEl) {
     libraryEl.hidden = view === "live";
   }
-  subtitleEl.textContent = ended ? "Session recap" : "Live copilot";
+  if (libraryBtn) {
+    libraryBtn.setAttribute("aria-pressed", library ? "true" : "false");
+    libraryBtn.textContent = library ? "Back" : "Library";
+  }
+  subtitleEl.textContent = library ? "Session library" : ended ? "Session recap" : "Live copilot";
   syncWakeLock();
+  syncLibraryUrl();
+  if (library) {
+    loadLibrary();
+    return;
+  }
   if (ended && latestSession) {
     requestAnimationFrame(() => {
       renderChart(dashChartEl, latestSession.turns ?? [], { height: 240, emptyEl: null });
@@ -365,11 +385,40 @@ function setView(view) {
   }
 }
 
+function toggleLibrary() {
+  if (currentView === "library") {
+    const fallback = latestSession?.active ? "live" : latestSession ? "ended" : "idle";
+    setView(previousView === "library" ? fallback : previousView);
+    return;
+  }
+  previousView = currentView;
+  setView("library");
+  librarySearchEl?.focus();
+}
+
+function syncLibraryUrl() {
+  const url = new URL(location.href);
+  if (libraryQuery) {
+    url.searchParams.set("q", libraryQuery);
+  } else {
+    url.searchParams.delete("q");
+  }
+  if (viewingSessionId && currentView !== "live" && currentView !== "library") {
+    url.searchParams.set("session", viewingSessionId);
+  } else {
+    url.searchParams.delete("session");
+  }
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  if (`${location.pathname}${location.search}${location.hash}` !== next) {
+    history.replaceState(null, "", next);
+  }
+}
+
 async function requestWakeLock() {
   if (!("wakeLock" in navigator) || document.visibilityState !== "visible") {
     return;
   }
-  if (currentView === "ended") {
+  if (currentView === "ended" || currentView === "library") {
     return;
   }
   try {
@@ -391,7 +440,7 @@ function releaseWakeLock() {
 }
 
 function syncWakeLock() {
-  if (currentView === "ended" || document.visibilityState !== "visible") {
+  if (currentView === "ended" || currentView === "library" || document.visibilityState !== "visible") {
     releaseWakeLock();
     return;
   }
@@ -935,7 +984,11 @@ function renderRecap(session) {
 
 function applySession(session, { ended = false } = {}) {
   latestSession = session || null;
+  if (session?.id) {
+    viewingSessionId = session.id;
+  }
   if (!session) {
+    viewingSessionId = null;
     bindExport(null);
     setView("idle");
     return;
@@ -977,9 +1030,24 @@ function renderLibrary() {
   libraryEmptyEl.hidden = libraryItems.length > 0;
   libraryEmptyEl.textContent = libraryQuery
     ? "No sessions match that search."
-    : "No saved sessions yet.";
-  const currentId = latestSession?.id;
+    : "No saved sessions yet. End an interview to file it here.";
+  if (libraryCountEl) {
+    if (!libraryItems.length) {
+      libraryCountEl.textContent = "";
+    } else if (libraryQuery) {
+      libraryCountEl.textContent = libraryItems.length === 1 ? "1 match" : `${libraryItems.length} matches`;
+    } else {
+      libraryCountEl.textContent = libraryItems.length === 1 ? "1 session" : `${libraryItems.length} sessions`;
+    }
+  }
+  const currentId = viewingSessionId || latestSession?.id;
+  const matchLabel = {
+    question: "Matched question",
+    answer: "Matched answer",
+    context: "Matched company",
+  };
   for (const item of libraryItems) {
+    const wrap = document.createElement("li");
     const button = document.createElement("button");
     button.type = "button";
     button.className = "library-item";
@@ -993,8 +1061,10 @@ function renderLibrary() {
     meta.className = "library-meta";
     const when = formatWhen(item.ended_at || item.updated_at || item.started_at);
     const count = item.questions === 1 ? "1 question" : `${item.questions || 0} questions`;
+    const duration = item.duration_ms ? formatElapsed(item.duration_ms) : "";
     const roleCompany = [item.role, item.company].filter(Boolean).join(" · ");
-    meta.textContent = [count, when, roleCompany, item.active ? "In progress" : ""]
+    const matched = libraryQuery ? matchLabel[item.match] || "" : "";
+    meta.textContent = [count, duration, when, roleCompany, item.active ? "In progress" : matched]
       .filter(Boolean)
       .join(" · ");
     button.append(title, meta);
@@ -1007,7 +1077,8 @@ function renderLibrary() {
     button.addEventListener("click", () => {
       openLibrarySession(item.id);
     });
-    libraryListEl.append(button);
+    wrap.append(button);
+    libraryListEl.append(wrap);
   }
 }
 
@@ -1030,9 +1101,11 @@ async function loadLibrary(query = libraryQuery) {
     libraryItems = [];
   }
   renderLibrary();
+  syncLibraryUrl();
 }
 
 async function openLibrarySession(sessionId) {
+  viewingSessionId = sessionId;
   try {
     const response = await fetch(withToken(`/api/sessions/${sessionId}`), {
       headers: authHeaders(),
@@ -1053,6 +1126,22 @@ async function openLibrarySession(sessionId) {
 }
 
 function applySnapshot(event) {
+  const incoming = event.session;
+  const liveTakeover = Boolean(event.listening || incoming?.active);
+  if (currentView === "library" && !liveTakeover) {
+    seedContext(event);
+    seedAnswerMode(event);
+    setStatus(event.listening ? "ok" : "checking", event.listening ? "Listening" : "Waiting");
+    loadLibrary();
+    return;
+  }
+  if (viewingSessionId && incoming?.id && incoming.id !== viewingSessionId && !liveTakeover) {
+    seedContext(event);
+    seedAnswerMode(event);
+    setStatus(event.listening ? "ok" : "checking", event.listening ? "Listening" : "Waiting");
+    loadLibrary();
+    return;
+  }
   const pairs = event.pairs ?? [];
   const liveQuestion = event.question || "";
   const liveAnswer = event.answer || "";
@@ -1075,6 +1164,9 @@ function applySnapshot(event) {
 
 function handleEvent(event) {
   const type = event.type;
+  if (currentView === "library" && ["partial_question", "question", "answer_delta", "answer", "qa"].includes(type)) {
+    setView("live");
+  }
   if (type === "snapshot") {
     applySnapshot(event);
     return;
@@ -1465,6 +1557,10 @@ newSessionBtn?.addEventListener("click", () => {
   startNewSession();
 });
 
+libraryBtn?.addEventListener("click", () => {
+  toggleLibrary();
+});
+
 copyAnswerBtn?.addEventListener("click", async () => {
   const points = talkingPoints(current.answer, current.talking_points);
   if (!points) {
@@ -1502,6 +1598,27 @@ librarySearchEl?.addEventListener("input", () => {
   }, 200);
 });
 
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) {
+    return;
+  }
+  const target = event.target;
+  const tag = target && target.tagName ? target.tagName : "";
+  if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) {
+    return;
+  }
+  if (currentView === "live") {
+    return;
+  }
+  event.preventDefault();
+  if (currentView !== "library") {
+    previousView = currentView;
+    setView("library");
+  }
+  librarySearchEl?.focus();
+  librarySearchEl?.select();
+});
+
 if (window.interviewApp) {
   document.body.classList.add("in-electron");
 }
@@ -1509,5 +1626,18 @@ if (window.interviewApp) {
 renderModeBar();
 applyAnswerMode(loadStoredAnswerMode());
 saveAnswerLayout(loadAnswerLayout());
+const bootParams = new URLSearchParams(location.search);
+const bootQuery = (bootParams.get("q") || "").trim();
+const bootSession = (bootParams.get("session") || "").trim();
+if (librarySearchEl && bootQuery) {
+  librarySearchEl.value = bootQuery;
+}
+loadLibrary(bootQuery);
+if (bootSession) {
+  viewingSessionId = bootSession;
+  openLibrarySession(bootSession);
+} else if (bootQuery) {
+  setView("library");
+}
 connect();
 syncWakeLock();

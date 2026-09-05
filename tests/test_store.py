@@ -61,7 +61,8 @@ class SessionStoreTests(unittest.TestCase):
         hits = self.store.list_summaries(query="semaphore")
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0]["id"], session.id)
-        self.assertIn("mutex", hits[0]["title"].lower())
+        self.assertIn("semaphore", hits[0]["title"].lower())
+        self.assertEqual(hits[0]["match"], "question")
 
         miss = self.store.list_summaries(query="kubernetes")
         self.assertEqual(miss, [])
@@ -90,6 +91,7 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0]["company"], "Globex")
         self.assertEqual(hits[0]["role"], "Staff SWE")
+        self.assertEqual(hits[0]["match"], "context")
 
         markdown = session_markdown(loaded)
         self.assertIn("Role: Staff SWE", markdown)
@@ -189,6 +191,39 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual(loaded.answer_mode, "star")
         self.assertEqual(loaded.turns[0].answer_mode, "star")
         self.assertIn("STAR", session_markdown(loaded))
+
+    def test_search_tokens_match_snippets_and_escaping(self) -> None:
+        mutex = InterviewSession(role="SWE", company="Globex")
+        mutex.add_turn(_turn(1, "What is a mutex?", "A lock."))
+        mutex.add_turn(_turn(2, "Explain a semaphore.", "A counter used to limit access."))
+        mutex.active = False
+        mutex.ended_at = mutex.updated_at
+        self.store.save(mutex)
+
+        k8s = InterviewSession(company="Initech")
+        k8s.add_turn(_turn(1, "What is Kubernetes?", "Orchestration for containers."))
+        k8s.active = False
+        k8s.ended_at = k8s.updated_at
+        self.store.save(k8s)
+
+        both = self.store.list_summaries(query="semaphore globex")
+        self.assertEqual([item["id"] for item in both], [mutex.id])
+        self.assertIn("semaphore", both[0]["title"].lower())
+        self.assertEqual(both[0]["match"], "question")
+
+        case_hits = self.store.list_summaries(query="GLOBEX")
+        self.assertEqual(len(case_hits), 1)
+        self.assertEqual(case_hits[0]["id"], mutex.id)
+
+        answer_hits = self.store.list_summaries(query="orchestration")
+        self.assertEqual(len(answer_hits), 1)
+        self.assertEqual(answer_hits[0]["id"], k8s.id)
+        self.assertEqual(answer_hits[0]["match"], "answer")
+        self.assertIn("Orchestration", answer_hits[0]["preview"])
+
+        self.assertEqual(self.store.list_summaries(query="semaphore initech"), [])
+        self.assertEqual(self.store.list_summaries(query="%"), [])
+        self.assertEqual(self.store.list_summaries(query="_API_"), [])
 
 
 class PipelinePersistTests(unittest.IsolatedAsyncioTestCase):

@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Live Q&amp;A</title>
-    <link rel="stylesheet" href="/live/styles.css?v=26" />
+    <link rel="stylesheet" href="/live/styles.css?v=27" />
   </head>
   <body data-view="idle">
     <main class="shell">
@@ -23,6 +23,7 @@
           </div>
         </div>
         <div class="nav-end">
+          <button id="library-btn" type="button" class="ghost-btn" aria-pressed="false">Library</button>
           <button id="new-session" type="button" class="ghost-btn">New session</button>
           <p id="status" class="pill" data-state="checking">Connecting</p>
         </div>
@@ -199,15 +200,23 @@
 
       <section class="library" id="library" hidden>
         <div class="library-head">
-          <p class="history-label">Past sessions</p>
+          <div>
+            <p class="history-label">Session library</p>
+            <p id="library-count" class="library-count"></p>
+          </div>
           <label class="sr-only" for="library-search">Search sessions</label>
-          <input id="library-search" type="search" placeholder="Search questions…" autocomplete="off" />
+          <input
+            id="library-search"
+            type="search"
+            placeholder="Search questions, answers, company…"
+            autocomplete="off"
+          />
         </div>
         <p id="library-empty" class="library-empty">No saved sessions yet.</p>
         <ul id="library-list" class="library-list"></ul>
       </section>
     </main>
-    <script src="/live/markdown.js?v=26"></script>
-    <script src="/live/app.js?v=26"></script>
+    <script src="/live/markdown.js?v=27"></script>
+    <script src="/live/app.js?v=27"></script>
   </body>
 </html>

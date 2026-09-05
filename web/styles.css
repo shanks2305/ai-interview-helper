@@ -62,7 +62,17 @@ body[data-view="ended"] .shell {
   max-width: 1040px;
 }
 
+body[data-view="library"] .shell {
+  max-width: 760px;
+}
+
 body:not([data-view="ended"]) .dashboard {
+  display: none;
+}
+
+body[data-view="library"] .live-stage,
+body[data-view="library"] .dashboard,
+body[data-view="library"] .mode-bar {
   display: none;
 }
 
@@ -270,6 +280,11 @@ body.in-electron .shell {
 
 .ghost-btn:hover {
   border-color: rgba(110, 231, 197, 0.4);
+}
+
+.ghost-btn[aria-pressed="true"] {
+  border-color: rgba(110, 231, 197, 0.4);
+  background: rgba(110, 231, 197, 0.12);
 }
 
 .ghost-btn[hidden] {
@@ -944,6 +959,10 @@ body[data-view="idle"] #context-card {
   background: var(--panel);
 }
 
+body[data-view="library"] .library {
+  min-height: 60vh;
+}
+
 .library[hidden] {
   display: none;
 }
@@ -960,8 +979,15 @@ body[data-view="idle"] #context-card {
   margin: 0;
 }
 
+.library-count {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  min-height: 1em;
+}
+
 .library-head input {
-  flex: 1 1 180px;
+  flex: 1 1 220px;
   min-width: 0;
   margin: 0;
   padding: 8px 12px;
@@ -996,6 +1022,11 @@ body[data-view="idle"] #context-card {
   gap: 8px;
 }
 
+.library-list > li {
+  margin: 0;
+  padding: 0;
+}
+
 .library-item {
   appearance: none;
   width: 100%;
@@ -1014,6 +1045,11 @@ body[data-view="idle"] #context-card {
 .library-item:hover,
 .library-item.is-current {
   border-color: rgba(110, 231, 197, 0.4);
+}
+
+.library-item:focus-visible {
+  outline: 2px solid rgba(110, 231, 197, 0.45);
+  outline-offset: 1px;
 }
 
 .library-title {

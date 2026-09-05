@@ -31,7 +31,7 @@ uv run ai-interview --desktop-only
 
 Copy `.env.example` to `.env` and set your LLM / STT providers before the first run.
 
-Sessions are stored in `data/sessions.db`. Opening `/live/` restores the last recap. Export Markdown or use **Save PDF** (browser print) from the dashboard. Search past sessions from the library on that page.
+Sessions are stored in `data/sessions.db`. Opening `/live/` restores the last recap. **Library** searches past questions, answers, and companies (`/` focuses search). Export Markdown or use **Save PDF** (browser print) from a recap.
 
 ### Phone on LAN
 

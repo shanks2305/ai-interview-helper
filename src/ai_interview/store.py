@@ -202,19 +202,26 @@ class SessionStore:
         return session
 
     def list_summaries(self, query: str = "", limit: int = 80) -> list[dict[str, Any]]:
-        like = _like_pattern(query)
+        tokens = _query_tokens(query)
         params: list[Any] = []
         where = ""
-        if like:
-            where = """
-                WHERE s.role LIKE ? ESCAPE '\\'
-                   OR s.company LIKE ? ESCAPE '\\'
-                   OR s.id IN (
-                    SELECT session_id FROM turns
-                    WHERE question LIKE ? ESCAPE '\\' OR answer LIKE ? ESCAPE '\\'
+        if tokens:
+            clauses = []
+            for token in tokens:
+                like = _like_pattern(token.lower())
+                clauses.append(
+                    """(
+                        LOWER(s.role) LIKE ? ESCAPE '\\'
+                        OR LOWER(s.company) LIKE ? ESCAPE '\\'
+                        OR s.id IN (
+                            SELECT session_id FROM turns
+                            WHERE LOWER(question) LIKE ? ESCAPE '\\'
+                               OR LOWER(answer) LIKE ? ESCAPE '\\'
+                        )
+                    )"""
                 )
-            """
-            params.extend([like, like, like, like])
+                params.extend([like, like, like, like])
+            where = "WHERE " + " AND ".join(clauses)
         params.append(max(1, min(int(limit), 200)))
         sql = f"""
             SELECT
@@ -248,30 +255,55 @@ class SessionStore:
         """
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
-        summaries: list[dict[str, Any]] = []
-        for row in rows:
-            title = (row["title"] or "").strip() or "Empty session"
-            if len(title) > 72:
-                title = title[:71].rstrip() + "…"
-            preview = (row["preview"] or "").strip().replace("\n", " ")
-            if len(preview) > 140:
-                preview = preview[:139].rstrip() + "…"
-            summaries.append(
-                {
-                    "id": row["id"],
-                    "started_at": row["started_at"],
-                    "ended_at": row["ended_at"],
-                    "updated_at": row["updated_at"],
-                    "active": bool(row["active"]),
-                    "duration_ms": int(row["duration_ms"] or 0),
-                    "questions": int(row["questions"] or 0),
-                    "title": title,
-                    "preview": preview,
-                    "role": (row["role"] or "").strip(),
-                    "company": (row["company"] or "").strip(),
-                }
-            )
+        summaries = [_summary_from_row(row) for row in rows]
+        if tokens:
+            self._apply_search_matches(summaries, tokens)
         return summaries
+
+    def _apply_search_matches(self, summaries: list[dict[str, Any]], tokens: list[str]) -> None:
+        ids = [item["id"] for item in summaries]
+        if not ids:
+            return
+        likes = [_like_pattern(token.lower()) for token in tokens]
+        turn_clause = " OR ".join(
+            "(LOWER(question) LIKE ? ESCAPE '\\' OR LOWER(answer) LIKE ? ESCAPE '\\')"
+            for _ in likes
+        )
+        turn_params: list[Any] = []
+        for like in likes:
+            turn_params.extend([like, like])
+        placeholders = ",".join("?" * len(ids))
+        sql = f"""
+            SELECT session_id, idx, question, answer
+            FROM turns
+            WHERE session_id IN ({placeholders})
+              AND ({turn_clause})
+            ORDER BY session_id, idx ASC
+        """
+        with self._lock:
+            rows = self._conn.execute(sql, [*ids, *turn_params]).fetchall()
+        first: dict[str, sqlite3.Row] = {}
+        for row in rows:
+            sid = str(row["session_id"])
+            if sid not in first:
+                first[sid] = row
+        for item in summaries:
+            row = first.get(str(item["id"]))
+            if row is None:
+                label = " · ".join(part for part in (item["role"], item["company"]) if part)
+                if label:
+                    item["preview"] = label
+                    item["match"] = "context"
+                continue
+            question = (row["question"] or "").strip()
+            answer = (row["answer"] or "").strip()
+            if _text_matches(question, tokens):
+                item["title"] = _clip(question.split("\n", 1)[0], 72)
+                item["preview"] = _snippet(question, tokens)
+                item["match"] = "question"
+            else:
+                item["preview"] = _snippet(answer, tokens)
+                item["match"] = "answer"
 
 
 _store: SessionStore | None = None
@@ -330,6 +362,63 @@ def _row_str(row: sqlite3.Row, key: str) -> str:
         return str(row[key] or "")
     except (IndexError, KeyError):
         return ""
+
+
+def _summary_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    title = (row["title"] or "").strip() or "Empty session"
+    preview = (row["preview"] or "").strip().replace("\n", " ")
+    return {
+        "id": row["id"],
+        "started_at": row["started_at"],
+        "ended_at": row["ended_at"],
+        "updated_at": row["updated_at"],
+        "active": bool(row["active"]),
+        "duration_ms": int(row["duration_ms"] or 0),
+        "questions": int(row["questions"] or 0),
+        "title": _clip(title, 72),
+        "preview": _clip(preview, 140),
+        "role": (row["role"] or "").strip(),
+        "company": (row["company"] or "").strip(),
+        "match": "",
+    }
+
+
+def _query_tokens(query: str) -> list[str]:
+    tokens: list[str] = []
+    for part in (query or "").split():
+        token = part.strip()
+        if token and token not in tokens:
+            tokens.append(token)
+        if len(tokens) >= 6:
+            break
+    return tokens
+
+
+def _text_matches(text: str, tokens: list[str]) -> bool:
+    hay = (text or "").lower()
+    return any(token.lower() in hay for token in tokens)
+
+
+def _clip(text: str, limit: int) -> str:
+    value = text or ""
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1].rstrip() + "…"
+
+
+def _snippet(text: str, tokens: list[str], limit: int = 140) -> str:
+    value = " ".join((text or "").split())
+    if not value:
+        return ""
+    lower = value.lower()
+    idx = -1
+    for token in tokens:
+        found = lower.find(token.lower())
+        if found >= 0 and (idx < 0 or found < idx):
+            idx = found
+    if idx > 28:
+        value = "…" + value[max(0, idx - 18) :]
+    return _clip(value, limit)
 
 
 def _like_pattern(query: str) -> str:
