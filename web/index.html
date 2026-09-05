@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#07080c" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Live Q&amp;A</title>
+    <link rel="stylesheet" href="/live/styles.css?v=17" />
+  </head>
+  <body data-view="idle">
+    <main class="shell">
+      <header class="nav">
+        <div class="brand">
+          <span class="logo" aria-hidden="true"></span>
+          <div>
+            <p class="mark">Interview</p>
+            <p id="subtitle" class="sub">Live copilot</p>
+          </div>
+        </div>
+        <p id="status" class="pill" data-state="checking">Connecting</p>
+      </header>
+
+      <section class="live-stage" id="live-stage">
+        <section class="current" id="current">
+          <div class="current-head">
+            <span class="tag">Question</span>
+            <button id="copy-answer" type="button" class="ghost-btn" hidden>Copy answer</button>
+          </div>
+          <p id="question" class="question is-placeholder">No question yet</p>
+          <span class="tag accent">Answer</span>
+          <p id="answer" class="answer-body is-placeholder">
+            Start listening in the desktop app, or paste a question that was not asked out loud.
+          </p>
+        </section>
+
+        <details class="ask-card" id="ask-card">
+          <summary class="ask-summary">
+            <span class="ask-summary-title">Paste a typed question</span>
+            <span class="ask-summary-hint">Coding problems, screenshots of text, anything unspoken</span>
+          </summary>
+          <form id="ask-form">
+            <label class="sr-only" for="ask-input">Question text</label>
+            <textarea
+              id="ask-input"
+              rows="4"
+              placeholder="Paste the problem, constraints, and examples…"
+            ></textarea>
+            <div class="ask-actions">
+              <button type="submit" id="ask-submit">Get an answer</button>
+              <span id="ask-shortcut" class="ask-shortcut"></span>
+              <p id="ask-error" class="ask-error" hidden></p>
+            </div>
+          </form>
+        </details>
+
+        <section class="history" id="history" hidden>
+          <p class="history-label">Earlier answers</p>
+          <ol id="log" class="log"></ol>
+        </section>
+      </section>
+
+      <section class="dashboard" id="dashboard" hidden>
+        <section class="dash-hero">
+          <span class="tag accent">Session dashboard</span>
+          <h1 id="dash-title">How this session went</h1>
+          <p id="recap-summary" class="recap-summary"></p>
+        </section>
+
+        <div class="stat-cards" id="dash-stats">
+          <article class="stat">
+            <p id="dash-count" class="stat-value">0</p>
+            <p class="stat-label">Questions</p>
+          </article>
+          <article class="stat">
+            <p id="dash-duration" class="stat-value">—</p>
+            <p class="stat-label">Duration</p>
+          </article>
+          <article class="stat">
+            <p id="dash-avg-q" class="stat-value">—</p>
+            <p class="stat-label">Avg listen</p>
+          </article>
+          <article class="stat">
+            <p id="dash-avg-a" class="stat-value">—</p>
+            <p class="stat-label">Avg answer</p>
+          </article>
+          <article class="stat">
+            <p id="dash-avg-stt" class="stat-value">—</p>
+            <p class="stat-label">Avg transcribe</p>
+          </article>
+          <article class="stat">
+            <p id="dash-first" class="stat-value">—</p>
+            <p class="stat-label">Avg first token</p>
+          </article>
+          <article class="stat">
+            <p id="dash-fast" class="stat-value">—</p>
+            <p class="stat-label">Fastest answer</p>
+          </article>
+          <article class="stat">
+            <p id="dash-slow" class="stat-value">—</p>
+            <p class="stat-label">Slowest answer</p>
+          </article>
+        </div>
+
+        <div class="chart-card">
+          <div class="chart-head">
+            <p class="history-label">Question vs answer time</p>
+            <p class="chart-legend">
+              <span class="swatch q"></span> Listen
+              <span class="swatch a"></span> Answer
+            </p>
+          </div>
+          <canvas id="dash-chart" width="640" height="240" aria-label="Session timing chart"></canvas>
+        </div>
+
+        <section class="recap" id="recap">
+          <p class="history-label">Turn breakdown</p>
+          <div class="table-wrap">
+            <table class="recap-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Question</th>
+                  <th>Listen</th>
+                  <th>Transcribe</th>
+                  <th>Draft</th>
+                  <th>First token</th>
+                  <th>Answer total</th>
+                </tr>
+              </thead>
+              <tbody id="recap-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="/live/app.js?v=17"></script>
+  </body>
+</html>

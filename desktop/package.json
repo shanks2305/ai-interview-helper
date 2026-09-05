@@ -1,0 +1,14 @@
+{
+  "name": "ai-interview-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron shell for the AI Interview app",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^38.1.0"
+  }
+}

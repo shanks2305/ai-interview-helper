@@ -1,0 +1,5 @@
+fastapi
+faster-whisper
+openai
+python-dotenv
+uvicorn[standard]

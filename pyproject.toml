@@ -1,0 +1,35 @@
+[project]
+name = "ai-interview"
+version = "0.1.0"
+description = "Local interview copilot: desktop mic, live Q&A web view"
+readme = "README.md"
+authors = [
+    { name = "Shishir Bahuguna", email = "contactshishirbahuguna@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.141.1",
+    "faster-whisper>=1.2.1",
+    "openai>=2.0.0",
+    "python-dotenv>=1.0.1",
+    "uvicorn[standard]>=0.52.4",
+]
+
+[project.scripts]
+ai-interview = "ai_interview.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel.force-include]
+"web" = "ai_interview/web"
+"desktop/renderer" = "ai_interview/desktop_renderer"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/web",
+    "/desktop",
+    "/README.md",
+]

@@ -1,0 +1,45 @@
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[oc]
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg
+
+# Virtual environments / package managers
+.venv/
+venv/
+.uv/
+
+# Node / Electron
+node_modules/
+desktop/dist/
+desktop/out/
+npm-debug.log*
+
+# Hugging Face / Whisper caches
+.cache/
+*.bin
+*.pt
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Docker (local overrides)
+docker-compose.override.yml

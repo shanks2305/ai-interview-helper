@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; connect-src 'self' http://127.0.0.1:8000 ws://127.0.0.1:8000; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    />
+    <title>AI Interview</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <p class="mark">AI Interview</p>
+        <p id="status" class="status" data-state="checking">Checking API</p>
+      </header>
+
+      <main class="stage">
+        <section class="intro" id="intro">
+          <p class="kicker">Mic</p>
+          <h1>Listen here. Read Q&amp;A in the browser.</h1>
+          <p class="lede">
+            Hold listen while the interviewer asks. Pause when they finish —
+            that clip is the question. The live page shows Q&amp;A and a live
+            dashboard; ending the session opens the full recap dashboard.
+          </p>
+          <p class="shortcut-hint">
+            Global shortcut
+            <kbd id="listen-shortcut">⌘⇧L</kbd>
+            toggles listen / pause. Green means capturing; grey means idle.
+          </p>
+          <div class="actions">
+            <button id="start" type="button" disabled>Listen</button>
+            <button id="open-live" type="button" class="ghost">Open live dashboard</button>
+          </div>
+          <form class="ask-card intro-ask" id="intro-ask-form">
+            <p class="kicker">Or type a question</p>
+            <p class="ask-hint">Paste a coding problem without using the mic.</p>
+            <textarea
+              id="intro-ask-input"
+              rows="4"
+              placeholder="Paste the problem, constraints, and examples…"
+            ></textarea>
+            <div class="ask-actions">
+              <button type="submit" id="intro-ask-submit">Ask</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="room" id="room" hidden>
+          <div class="mic-bar">
+            <div class="mic-meta">
+              <span id="rec-dot" class="rec-dot" data-live="false"></span>
+              <p id="mic-label" class="mic-label">Mic idle</p>
+              <p id="timer" class="timer">00:00</p>
+            </div>
+            <div class="level" aria-hidden="true">
+              <span id="level-fill" class="level-fill"></span>
+            </div>
+            <button id="stop" type="button" class="ghost">Pause</button>
+            <button id="end-session" type="button" class="ghost">End session</button>
+          </div>
+          <p class="room-hint">
+            Pause when the question ends. Live Q&amp;A updates on
+            <button id="open-live-room" type="button" class="text-link">the live page</button>.
+            End the session to open the dashboard.
+          </p>
+          <p id="session-stats" class="session-stats" hidden></p>
+          <form class="ask-card" id="ask-form">
+            <p class="kicker">Typed question</p>
+            <p class="ask-hint">Paste a coding problem that was not asked out loud.</p>
+            <textarea
+              id="ask-input"
+              rows="4"
+              placeholder="Paste the problem, constraints, and examples…"
+            ></textarea>
+            <div class="ask-actions">
+              <button type="submit" id="ask-submit">Ask</button>
+              <span class="ask-shortcut">⌘ / Ctrl + Enter</span>
+            </div>
+          </form>
+        </section>
+
+        <p id="error" class="error" hidden></p>
+
+        <section class="recap" id="recap" hidden>
+          <p class="kicker">Session dashboard</p>
+          <h2 id="recap-title">Interview recap</h2>
+          <p id="recap-summary" class="recap-summary"></p>
+          <div class="stat-cards" id="recap-stats" hidden></div>
+          <div class="table-wrap">
+            <table class="recap-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Question</th>
+                  <th>Listen</th>
+                  <th>Answer</th>
+                </tr>
+              </thead>
+              <tbody id="recap-body"></tbody>
+            </table>
+          </div>
+          <div class="actions">
+            <button id="new-session" type="button">Listen again</button>
+            <button id="open-live-recap" type="button" class="ghost">Open live dashboard</button>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>
