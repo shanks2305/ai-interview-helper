@@ -29,6 +29,7 @@ const askShortcutEl = document.getElementById("ask-shortcut");
 const copyAnswerBtn = document.getElementById("copy-answer");
 const answerTagEl = document.getElementById("answer-tag");
 const modeBarEl = document.getElementById("mode-bar");
+const modeToolbarEl = document.getElementById("mode-toolbar");
 const viewBarEl = document.getElementById("view-bar");
 const contextCardEl = document.getElementById("context-card");
 const contextFormEl = document.getElementById("context-form");
@@ -367,11 +368,13 @@ function setView(view) {
   const library = view === "library";
   liveStageEl.hidden = library;
   dashboardEl.hidden = !ended;
-  if (modeBarEl) {
+  if (modeToolbarEl) {
+    modeToolbarEl.hidden = library;
+  } else if (modeBarEl) {
     modeBarEl.hidden = library;
   }
   if (libraryEl) {
-    libraryEl.hidden = view === "live";
+    libraryEl.hidden = !library;
   }
   if (libraryBtn) {
     libraryBtn.setAttribute("aria-pressed", library ? "true" : "false");
@@ -543,8 +546,19 @@ function prependPair(question, answer, source, mode) {
   a.className = "pair-a";
   setRichText(a, answer, source, mode);
   item.append(q, a);
+  item.tabIndex = 0;
+  item.setAttribute("role", "button");
+  item.setAttribute("aria-expanded", "false");
   item.addEventListener("click", () => {
-    item.classList.toggle("is-open");
+    const open = item.classList.toggle("is-open");
+    item.setAttribute("aria-expanded", open ? "true" : "false");
+  });
+  item.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    item.click();
   });
   logEl.prepend(item);
   showHistory();
@@ -852,6 +866,7 @@ function setAnswerText(text) {
   const skipped = Boolean(value) && isSkipAnswer(value) && value !== "Drafting…";
   answerEl.classList.toggle("is-placeholder", !value);
   answerEl.classList.toggle("is-skip", skipped);
+  answerEl.classList.toggle("is-drafting", value === "Drafting…");
   if (!value) {
     answerEl.classList.remove("is-markdown", "is-points");
     answerEl.textContent = PLACEHOLDER_ANSWER;
@@ -1556,7 +1571,12 @@ askInputEl?.addEventListener("keydown", (event) => {
 });
 
 if (askShortcutEl) {
-  askShortcutEl.textContent = isMac ? "⌘ Enter to send" : "Ctrl + Enter to send";
+  askShortcutEl.replaceChildren();
+  const first = document.createElement("kbd");
+  first.textContent = isMac ? "⌘" : "Ctrl";
+  const second = document.createElement("kbd");
+  second.textContent = "Enter";
+  askShortcutEl.append(first, second, document.createTextNode(" to send"));
 }
 
 askCardEl?.addEventListener("toggle", () => {

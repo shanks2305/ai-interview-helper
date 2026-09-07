@@ -6,13 +6,23 @@
       name="viewport"
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
+    <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#07080c" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta
+      name="description"
+      content="Live interview copilot — questions, talking points, and session recaps."
+    />
     <title>Live Q&amp;A</title>
-    <link rel="stylesheet" href="/live/styles.css?v=28" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2307080c'/%3E%3Crect x='3' y='3' width='26' height='26' rx='7' fill='url(%23g)'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop stop-color='%236ee7c5'/%3E%3Cstop offset='1' stop-color='%237c9cff'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="/live/styles.css?v=31" />
   </head>
   <body data-view="idle">
+    <a class="skip-link" href="#current">Skip to live answer</a>
     <main class="shell">
       <header class="nav">
         <div class="brand">
@@ -25,11 +35,14 @@
         <div class="nav-end">
           <button id="library-btn" type="button" class="ghost-btn" aria-pressed="false">Library</button>
           <button id="new-session" type="button" class="ghost-btn">New session</button>
-          <p id="status" class="pill" data-state="checking">Connecting</p>
+          <p id="status" class="pill" data-state="checking" role="status" aria-live="polite">Connecting</p>
         </div>
       </header>
 
-      <div class="mode-bar" id="mode-bar" role="radiogroup" aria-label="Answer mode"></div>
+      <div class="toolbar" id="mode-toolbar">
+        <p class="toolbar-label">Answer style</p>
+        <div class="mode-bar" id="mode-bar" role="radiogroup" aria-label="Answer mode"></div>
+      </div>
 
       <section class="live-stage" id="live-stage">
         <section class="current" id="current">
@@ -37,8 +50,8 @@
             <span class="tag">Question</span>
             <div class="current-actions">
               <div id="view-bar" class="view-bar" hidden role="radiogroup" aria-label="Answer layout">
-                <button type="button" class="view-btn" data-layout="points" aria-checked="true">Points</button>
-                <button type="button" class="view-btn" data-layout="full" aria-checked="false">Full</button>
+                <button type="button" class="view-btn" role="radio" data-layout="points" aria-checked="true">Points</button>
+                <button type="button" class="view-btn" role="radio" data-layout="full" aria-checked="false">Full</button>
               </div>
               <button id="copy-answer" type="button" class="ghost-btn" hidden>Copy talking points</button>
             </div>
@@ -48,12 +61,32 @@
           <div id="answer" class="answer-body is-placeholder">
             Start listening in the desktop app, or paste a question that was not asked out loud.
           </div>
+          <div class="idle-guide" id="idle-guide">
+            <p class="idle-kicker">Set up once, then stay on this screen</p>
+            <ol class="idle-steps">
+              <li>
+                <span class="idle-step-n">1</span>
+                <span><strong>Save context</strong> — paste the JD and resume so answers stay grounded.</span>
+              </li>
+              <li>
+                <span class="idle-step-n">2</span>
+                <span><strong>Start listening</strong> — use the desktop capture window for spoken questions.</span>
+              </li>
+              <li>
+                <span class="idle-step-n">3</span>
+                <span><strong>Paste the rest</strong> — coding prompts and anything not said out loud.</span>
+              </li>
+            </ol>
+          </div>
         </section>
 
         <details class="ask-card" id="context-card">
           <summary class="ask-summary">
-            <span class="ask-summary-title">Interview context</span>
-            <span id="context-hint" class="ask-summary-hint">Paste the JD and resume once — used for every answer</span>
+            <span class="ask-summary-copy">
+              <span class="ask-summary-title">Interview context</span>
+              <span id="context-hint" class="ask-summary-hint">Paste the JD and resume once — used for every answer</span>
+            </span>
+            <span class="ask-chevron" aria-hidden="true"></span>
           </summary>
           <form id="context-form">
             <div class="context-grid">
@@ -92,8 +125,11 @@
 
         <details class="ask-card" id="ask-card">
           <summary class="ask-summary">
-            <span class="ask-summary-title">Paste a typed question</span>
-            <span class="ask-summary-hint">Coding problems, screenshots of text, anything unspoken</span>
+            <span class="ask-summary-copy">
+              <span class="ask-summary-title">Paste a typed question</span>
+              <span class="ask-summary-hint">Coding problems, screenshots of text, anything unspoken</span>
+            </span>
+            <span class="ask-chevron" aria-hidden="true"></span>
           </summary>
           <form id="ask-form">
             <label class="sr-only" for="ask-input">Question text</label>
@@ -216,7 +252,7 @@
         <ul id="library-list" class="library-list"></ul>
       </section>
     </main>
-    <script src="/live/markdown.js?v=28"></script>
-    <script src="/live/app.js?v=28"></script>
+    <script src="/live/markdown.js?v=31"></script>
+    <script src="/live/app.js?v=31"></script>
   </body>
 </html>
