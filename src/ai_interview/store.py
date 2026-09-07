@@ -67,6 +67,7 @@ class SessionStore:
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.executescript(_SCHEMA)
         self._migrate()
+        self._purge_empty()
         self._conn.commit()
 
     def close(self) -> None:
@@ -87,7 +88,15 @@ class SessionStore:
             if name not in turn_cols:
                 self._conn.execute(f"ALTER TABLE turns ADD COLUMN {name} {spec}")
 
+    def _purge_empty(self) -> None:
+        self._conn.execute(
+            "DELETE FROM sessions WHERE id NOT IN (SELECT DISTINCT session_id FROM turns)"
+        )
+
     def save(self, session: InterviewSession) -> None:
+        if not session.turns:
+            self.delete(session.id)
+            return
         payload = (
             session.id,
             session.started_at,
@@ -151,6 +160,16 @@ class SessionStore:
                 turns,
             )
             self._conn.commit()
+
+    def delete(self, session_id: str) -> bool:
+        sid = (session_id or "").strip()
+        if not sid:
+            return False
+        with self._lock:
+            self._conn.execute("DELETE FROM turns WHERE session_id = ?", (sid,))
+            cursor = self._conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+            self._conn.commit()
+            return cursor.rowcount > 0
 
     def get(self, session_id: str) -> InterviewSession | None:
         with self._lock:

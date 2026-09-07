@@ -129,6 +129,14 @@ def api_session_print(session_id: str, autoprint: bool = False) -> HTMLResponse:
     )
 
 
+@app.delete("/api/sessions/{session_id}")
+async def api_session_delete(session_id: str) -> dict[str, Any]:
+    deleted = await hub.delete_session(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"ok": "deleted", "id": session_id, "session": hub.session}
+
+
 class AskBody(BaseModel):
     text: str = Field(min_length=1)
 

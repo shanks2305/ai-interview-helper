@@ -150,23 +150,54 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_persist_does_not_revive_ended_session(self) -> None:
         first = InterviewPipeline(self.emit, store=self.store)
         await first._ensure_session()
+        assert first._session is not None
+        first._session.add_turn(
+            TurnRecord(
+                index=1,
+                question="What is a mutex?",
+                answer="A lock.",
+                listen_ms=1,
+                stt_ms=1,
+                llm_ms=1,
+                llm_first_ms=1,
+                total_ms=2,
+            )
+        )
+        first._persist()
         session_id = first._session.id
         await first.end_session()
-        self.assertFalse(self.store.get(session_id).active)
+        stored = self.store.get(session_id)
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertFalse(stored.active)
 
         stale = InterviewPipeline(self.emit, store=self.store)
         stale._session = self.store.get(session_id)
         stale._session.active = True
         stale._session_mono = 0.0
         stale._persist()
-        self.assertFalse(self.store.get(session_id).active)
+        revived = self.store.get(session_id)
+        self.assertIsNotNone(revived)
+        assert revived is not None
+        self.assertFalse(revived.active)
         self.assertIsNone(stale._session)
 
         await stale._ensure_session()
         self.assertIsNotNone(stale._session)
         self.assertNotEqual(stale._session.id, session_id)
 
-    async def test_concurrent_ensure_session_opens_one_row(self) -> None:
+    async def test_concurrent_ensure_session_opens_one_live_session(self) -> None:
         pipeline = InterviewPipeline(self.emit, store=self.store)
         await asyncio.gather(pipeline._ensure_session(), pipeline._ensure_session())
-        self.assertEqual(len(self.store.list_summaries()), 1)
+        self.assertEqual(self.store.list_summaries(), [])
+        self.assertIsNotNone(pipeline._session)
+
+    async def test_empty_session_is_not_saved(self) -> None:
+        pipeline = InterviewPipeline(self.emit, store=self.store)
+        await pipeline._ensure_session()
+        assert pipeline._session is not None
+        session_id = pipeline._session.id
+        self.assertIsNone(self.store.get(session_id))
+        await pipeline.end_session()
+        self.assertIsNone(self.store.get(session_id))
+        self.assertEqual(self.store.list_summaries(), [])

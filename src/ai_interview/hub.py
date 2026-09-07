@@ -7,6 +7,7 @@ from fastapi import WebSocket
 
 from .modes import DEFAULT_ANSWER_MODE, answer_mode_catalog, normalize_answer_mode
 from .session import InterviewSession, empty_context, normalize_context
+from .store import get_store
 from .talking_points import extract_talking_points
 
 
@@ -121,6 +122,21 @@ class LiveHub:
                 self._drafting = False
             elif kind == "session_resume":
                 self._apply_session_view(self.session)
+            return
+        if kind == "session_deleted":
+            current_id = (self.session or {}).get("id")
+            if current_id and current_id == event.get("session_id"):
+                replacement = event.get("session")
+                if replacement:
+                    self.restore(replacement)
+                else:
+                    self.session = None
+                    self.pairs = []
+                    self.question = ""
+                    self.answer = ""
+                    self.source = ""
+                    self.talking_points = None
+                    self._drafting = False
             return
         if kind == "context_updated":
             if event.get("session"):
@@ -268,6 +284,38 @@ class LiveHub:
 
     async def end_session(self) -> None:
         await self._active_pipeline().end_session()
+
+    def _clear_session_view(self) -> None:
+        self.session = None
+        self.pairs = []
+        self.question = ""
+        self.answer = ""
+        self.source = ""
+        self.talking_points = None
+        self._drafting = False
+
+    async def delete_session(self, session_id: str) -> bool:
+        sid = (session_id or "").strip()
+        if not sid:
+            return False
+        pipeline = self._pipeline or self._standalone
+        if pipeline is not None:
+            deleted = pipeline.delete_stored_session(sid)
+            store = pipeline._store()
+        else:
+            store = get_store()
+            deleted = store.delete(sid)
+        if not deleted:
+            return False
+        current_id = (self.session or {}).get("id")
+        if current_id == sid:
+            latest = store.latest()
+            if latest is not None:
+                self.restore(latest)
+            else:
+                self._clear_session_view()
+        await self.publish({"type": "session_deleted", "session_id": sid, "session": self.session})
+        return True
 
 
 hub = LiveHub()

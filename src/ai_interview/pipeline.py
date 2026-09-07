@@ -68,6 +68,22 @@ class InterviewPipeline:
             return False
         return True
 
+    def drop_session(self, session_id: str) -> None:
+        session = self._session
+        if session is not None and session.id == session_id:
+            self._forget_session()
+
+    def delete_stored_session(self, session_id: str) -> bool:
+        sid = (session_id or "").strip()
+        if not sid:
+            return False
+        store = self._store()
+        if store.get(sid) is None:
+            return False
+        store.delete(sid)
+        self.drop_session(sid)
+        return True
+
     def drop_stale_session(self) -> None:
         self._session_still_live()
 

@@ -35,6 +35,44 @@ class SessionStoreTests(unittest.TestCase):
         self.store.close()
         self._tmp.cleanup()
 
+    def test_save_skips_empty_session(self) -> None:
+        empty = InterviewSession(role="SWE", company="Acme")
+        self.store.save(empty)
+        self.assertIsNone(self.store.get(empty.id))
+        self.assertEqual(self.store.list_summaries(), [])
+
+        empty.add_turn(_turn())
+        self.store.save(empty)
+        self.assertIsNotNone(self.store.get(empty.id))
+
+        empty.turns.clear()
+        self.store.save(empty)
+        self.assertIsNone(self.store.get(empty.id))
+        self.assertEqual(self.store.list_summaries(), [])
+
+    def test_opens_store_purges_sessions_without_turns(self) -> None:
+        import sqlite3
+
+        path = Path(self._tmp.name) / "empties.db"
+        first = SessionStore(path)
+        keep = InterviewSession()
+        keep.add_turn(_turn())
+        first.save(keep)
+        first.close()
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "INSERT INTO sessions (id, started_at, ended_at, updated_at, active, duration_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("ghost-empty", "2026-01-01T00:00:00+00:00", None, "2026-01-01T00:00:00+00:00", 0, 0),
+        )
+        conn.commit()
+        conn.close()
+
+        reopened = SessionStore(path)
+        self.assertIsNone(reopened.get("ghost-empty"))
+        self.assertIsNotNone(reopened.get(keep.id))
+        reopened.close()
+
     def test_save_reload_and_search(self) -> None:
         session = InterviewSession()
         session.add_turn(_turn())
@@ -136,6 +174,11 @@ class SessionStoreTests(unittest.TestCase):
             "VALUES (?, ?, ?, ?, ?, ?)",
             ("legacy", "2026-01-01T00:00:00+00:00", None, "2026-01-01T00:00:00+00:00", 1, 0),
         )
+        conn.execute(
+            "INSERT INTO turns (session_id, idx, question, answer, listen_ms, stt_ms, llm_ms, "
+            "llm_first_ms, total_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("legacy", 1, "What is a mutex?", "A lock.", 1, 1, 1, 1, 3),
+        )
         conn.commit()
         conn.close()
 
@@ -224,6 +267,28 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual(self.store.list_summaries(query="%"), [])
         self.assertEqual(self.store.list_summaries(query="_API_"), [])
 
+    def test_delete_removes_session_and_turns(self) -> None:
+        keep = InterviewSession()
+        keep.add_turn(_turn(1, "Keep this?", "Yes."))
+        keep.active = False
+        self.store.save(keep)
+
+        gone = InterviewSession()
+        gone.add_turn(_turn(1, "Delete this?", "Please."))
+        gone.active = False
+        self.store.save(gone)
+
+        self.assertTrue(self.store.delete(gone.id))
+        self.assertIsNone(self.store.get(gone.id))
+        self.assertFalse(self.store.delete(gone.id))
+        self.assertFalse(self.store.delete(""))
+        remaining = self.store.list_summaries()
+        self.assertEqual([item["id"] for item in remaining], [keep.id])
+        loaded = self.store.get(keep.id)
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertEqual(loaded.turns[0].question, "Keep this?")
+
 
 class PipelinePersistTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -274,6 +339,7 @@ class PipelinePersistTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_new_session_copies_prior_context(self) -> None:
         ended = InterviewSession(role="SWE", company="Acme", resume="Python, Kafka.")
+        ended.add_turn(_turn())
         ended.active = False
         ended.ended_at = ended.updated_at
         self.store.save(ended)
@@ -292,6 +358,15 @@ class PipelinePersistTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Kafka", other._session.resume)
         self.assertEqual(events[0]["type"], "session_start")
         self.assertEqual(events[0]["session"]["context"]["company"], "Acme")
+        self.assertIsNone(self.store.get(other._session.id))
+
+    async def test_end_empty_session_does_not_save(self) -> None:
+        await self.pipeline.start_new_session()
+        assert self.pipeline._session is not None
+        session_id = self.pipeline._session.id
+        await self.pipeline.end_session()
+        self.assertIsNone(self.store.get(session_id))
+        self.assertEqual(self.store.list_summaries(), [])
 
     async def test_start_new_session_archives_current_and_keeps_context(self) -> None:
         self.pipeline._session = InterviewSession(role="SWE", company="Acme")
@@ -347,6 +422,7 @@ class PipelinePersistTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pending_context_wins_over_copied_session(self) -> None:
         ended = InterviewSession(role="Old role", company="OldCo")
+        ended.add_turn(_turn())
         ended.active = False
         self.store.save(ended)
 
@@ -422,6 +498,17 @@ class PipelinePersistTests(unittest.IsolatedAsyncioTestCase):
         assert self.pipeline._session is not None
         self.assertEqual(self.pipeline._session.answer_mode, "spoken_45")
         self.assertEqual(self.events[-1]["session"]["answer_mode"], "spoken_45")
+
+    async def test_delete_stored_session_forgets_live_copy(self) -> None:
+        self.pipeline._session = InterviewSession(role="SWE")
+        self.pipeline._session_mono = 0.0
+        self.pipeline._session.add_turn(_turn())
+        session_id = self.pipeline._session.id
+        self.pipeline._persist()
+        self.assertTrue(self.pipeline.delete_stored_session(session_id))
+        self.assertIsNone(self.store.get(session_id))
+        self.assertIsNone(self.pipeline._session)
+        self.assertFalse(self.pipeline.delete_stored_session(session_id))
 
 
 if __name__ == "__main__":

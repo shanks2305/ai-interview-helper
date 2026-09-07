@@ -13,6 +13,7 @@ const dashTitleEl = document.getElementById("dash-title");
 const exportActionsEl = document.getElementById("export-actions");
 const exportMdEl = document.getElementById("export-md");
 const exportPdfEl = document.getElementById("export-pdf");
+const deleteSessionBtn = document.getElementById("delete-session");
 const libraryEl = document.getElementById("library");
 const libraryListEl = document.getElementById("library-list");
 const libraryEmptyEl = document.getElementById("library-empty");
@@ -937,7 +938,18 @@ function renderLibrary() {
     button.addEventListener("click", () => {
       openLibrarySession(item.id);
     });
-    wrap.append(button);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost-btn danger-btn library-delete";
+    remove.textContent = "Delete";
+    remove.setAttribute("aria-label", `Delete recap: ${item.title || "Empty session"}`);
+    remove.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      deleteLibrarySession(item.id, item.title);
+    });
+    wrap.className = "library-row";
+    wrap.append(button, remove);
     libraryListEl.append(wrap);
   }
 }
@@ -969,6 +981,44 @@ async function loadLibrary(query = libraryQuery) {
   }
   renderLibrary();
   syncLibraryUrl();
+}
+
+async function deleteLibrarySession(sessionId, title) {
+  const label = (title || "this recap").trim() || "this recap";
+  if (!window.confirm(`Delete “${label}”? This cannot be undone.`)) {
+    return;
+  }
+  try {
+    const response = await fetch(withToken(`/api/sessions/${sessionId}`), {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    if (response.status === 404) {
+      libraryItems = libraryItems.filter((item) => item.id !== sessionId);
+      renderLibrary();
+      setStatus("ok", "Recap already gone");
+      return;
+    }
+    if (!response.ok) {
+      throw new Error("Could not delete session.");
+    }
+    const payload = await response.json().catch(() => ({}));
+    libraryItems = libraryItems.filter((item) => item.id !== sessionId);
+    renderLibrary();
+    if (viewingSessionId === sessionId) {
+      if (currentView === "library") {
+        viewingSessionId = payload.session?.id || null;
+      } else if (payload.session) {
+        showStoredSession(payload.session);
+      } else {
+        applySession(null);
+      }
+    }
+    setStatus("ok", "Recap deleted");
+    loadLibrary();
+  } catch {
+    setStatus("down", "Could not delete recap");
+  }
 }
 
 async function openLibrarySession(sessionId) {
@@ -1090,6 +1140,24 @@ function handleEvent(event) {
   if (type === "session_summary") {
     applySession(event.session, { ended: true });
     setStatus("ok", "Dashboard ready");
+    loadLibrary();
+    return;
+  }
+  if (type === "session_deleted") {
+    libraryItems = libraryItems.filter((item) => item.id !== event.session_id);
+    renderLibrary();
+    if (viewingSessionId === event.session_id) {
+      if (currentView === "library") {
+        viewingSessionId = event.session?.id || null;
+        setStatus("ok", "Recap deleted");
+      } else if (event.session) {
+        showStoredSession(event.session);
+        setStatus("ok", "Recap deleted");
+      } else {
+        applySession(null);
+        setStatus("ok", "Recap deleted");
+      }
+    }
     loadLibrary();
     return;
   }
@@ -1497,6 +1565,14 @@ endSessionBtn?.addEventListener("click", () => {
 
 libraryBtn?.addEventListener("click", () => {
   toggleLibrary();
+});
+
+deleteSessionBtn?.addEventListener("click", () => {
+  const session = latestSession;
+  if (!session?.id) {
+    return;
+  }
+  deleteLibrarySession(session.id, session.title);
 });
 
 copyAnswerBtn?.addEventListener("click", async () => {

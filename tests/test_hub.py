@@ -329,3 +329,56 @@ class HubContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(snap["session"]["active"])
         store.close()
         tmp.cleanup()
+
+    async def test_delete_session_removes_recap_and_restores_latest(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from ai_interview.pipeline import InterviewPipeline
+        from ai_interview.session import InterviewSession, TurnRecord
+        from ai_interview.store import SessionStore
+
+        tmp = tempfile.TemporaryDirectory()
+        store = SessionStore(Path(tmp.name) / "sessions.db")
+        keep = InterviewSession()
+        keep.add_turn(
+            TurnRecord(
+                index=1,
+                question="Keep?",
+                answer="Yes.",
+                listen_ms=1,
+                stt_ms=1,
+                llm_ms=1,
+                llm_first_ms=1,
+                total_ms=3,
+            )
+        )
+        keep.active = False
+        store.save(keep)
+        gone = InterviewSession()
+        gone.add_turn(
+            TurnRecord(
+                index=1,
+                question="Gone?",
+                answer="Yes.",
+                listen_ms=1,
+                stt_ms=1,
+                llm_ms=1,
+                llm_first_ms=1,
+                total_ms=3,
+            )
+        )
+        gone.active = False
+        store.save(gone)
+
+        hub = LiveHub()
+        hub.restore(gone)
+        pipeline = InterviewPipeline(hub.publish, store=store)
+        hub.attach_pipeline(pipeline)
+        deleted = await hub.delete_session(gone.id)
+        self.assertTrue(deleted)
+        self.assertIsNone(store.get(gone.id))
+        self.assertEqual(hub.session["id"], keep.id)
+        self.assertFalse(await hub.delete_session(gone.id))
+        store.close()
+        tmp.cleanup()
