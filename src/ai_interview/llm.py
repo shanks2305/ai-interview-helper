@@ -67,8 +67,8 @@ def context_block(
     lines.extend(
         [
             "",
-            "Use this only when relevant. Ground answers in the candidate's experience.",
-            "Do not recite the resume or job description unless asked.",
+            "Use this when it fits: prefer their stack, teams, and stories over generic examples.",
+            "Do not recite the resume or job description unless asked. Do not invent employers that contradict it.",
         ]
     )
     return "\n".join(lines)

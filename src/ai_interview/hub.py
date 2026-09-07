@@ -266,5 +266,8 @@ class LiveHub:
     async def start_new_session(self) -> None:
         await self._active_pipeline().start_new_session()
 
+    async def end_session(self) -> None:
+        await self._active_pipeline().end_session()
+
 
 hub = LiveHub()

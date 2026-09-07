@@ -854,7 +854,8 @@ function startRecorder() {
     sendAudioChunk(event.data);
   });
 
-  recorder.start(250);
+  // One complete container on stop. Timesliced WebM often decodes as only the first slice.
+  recorder.start();
   sendJson({ type: "start", mimeType: recorder.mimeType });
 }
 
@@ -1060,12 +1061,12 @@ async function pauseCapture() {
   reportListening(false);
   setLive(false, "Paused · drafting on live page");
   setStatus("checking", "Drafting on live page");
-  sendJson({ type: "prime" });
   updateCalibrateUi();
 
   try {
     await stopRecorder(activeRecorder);
     await audioQueue;
+    sendJson({ type: "prime" });
     sendJson({ type: "stop" });
   } finally {
     listenBusy = false;
@@ -1077,6 +1078,12 @@ async function endSession() {
   if (listenBusy) {
     return;
   }
+  if (doneEl && !doneEl.hidden) {
+    return;
+  }
+  if (!sessionActive && introEl && !introEl.hidden) {
+    return;
+  }
   if (capturing) {
     await pauseCapture();
   }
@@ -1084,6 +1091,20 @@ async function endSession() {
   releaseCaptureGraph({ closeContext: false });
   setLive(false, "Session ended");
   setStatus("ok", "Session ended");
+}
+
+async function newSession() {
+  if (listenBusy) {
+    return;
+  }
+  const inRoom = Boolean(roomEl && !roomEl.hidden);
+  if (socket?.readyState === WebSocket.OPEN) {
+    sendJson({ type: "new_session" });
+    if (inRoom) {
+      return;
+    }
+  }
+  await startCapture();
 }
 
 async function teardown(notifyServer) {
@@ -1158,8 +1179,9 @@ async function connect() {
 
 function shortcutLabel(accelerator) {
   const isMac = navigator.platform.toLowerCase().includes("mac");
-  if (accelerator === "CommandOrControl+Shift+L") {
-    return isMac ? "⌘⇧L" : "Ctrl+Shift+L";
+  const match = /CommandOrControl\+Shift\+([A-Z])/i.exec(accelerator || "");
+  if (match) {
+    return isMac ? `⌘⇧${match[1].toUpperCase()}` : `Ctrl+Shift+${match[1].toUpperCase()}`;
   }
   return accelerator;
 }
@@ -1187,14 +1209,28 @@ for (const button of document.querySelectorAll("#open-live, #open-live-room, #op
 }
 
 document.getElementById("new-session")?.addEventListener("click", () => {
-  startCapture().catch(() => {
-    showError("Could not start listening.");
+  newSession().catch(() => {
+    showError("Could not start a new session.");
   });
 });
 
-const shortcutEl = document.getElementById("listen-shortcut");
-if (shortcutEl && window.interviewApp?.listenShortcut) {
-  shortcutEl.textContent = shortcutLabel(window.interviewApp.listenShortcut);
+function bindShortcutLabel(id, accelerator) {
+  const el = document.getElementById(id);
+  if (el && accelerator) {
+    el.textContent = shortcutLabel(accelerator);
+  }
+}
+
+bindShortcutLabel("listen-shortcut", window.interviewApp?.listenShortcut);
+bindShortcutLabel("end-session-shortcut", window.interviewApp?.endSessionShortcut);
+bindShortcutLabel("new-session-shortcut", window.interviewApp?.newSessionShortcut);
+
+if (endSessionBtn && window.interviewApp?.endSessionShortcut) {
+  endSessionBtn.title = `End session (${shortcutLabel(window.interviewApp.endSessionShortcut)})`;
+}
+const newSessionBtn = document.getElementById("new-session");
+if (newSessionBtn && window.interviewApp?.newSessionShortcut) {
+  newSessionBtn.title = `New session (${shortcutLabel(window.interviewApp.newSessionShortcut)})`;
 }
 
 window.interviewApp?.onToggleListen?.(() => {
@@ -1202,6 +1238,18 @@ window.interviewApp?.onToggleListen?.(() => {
     startBtn.disabled = false;
     reportListening(false);
     showError("Could not toggle listening from the global shortcut.");
+  });
+});
+
+window.interviewApp?.onEndSession?.(() => {
+  endSession().catch(() => {
+    showError("Could not end the session.");
+  });
+});
+
+window.interviewApp?.onNewSession?.(() => {
+  newSession().catch(() => {
+    showError("Could not start a new session.");
   });
 });
 

@@ -122,10 +122,10 @@ STT_MODEL = _first(
 STT_DEVICE = _first("STT_DEVICE", default="auto").lower()
 STT_COMPUTE_TYPE = _first("STT_COMPUTE_TYPE").lower()
 
-_temperature_raw = os.getenv("LLM_TEMPERATURE", "0.3")
+_temperature_raw = os.getenv("LLM_TEMPERATURE", "0.5")
 LLM_TEMPERATURE = None if _temperature_raw.strip() == "" else float(_temperature_raw)
 
-_max_tokens_raw = os.getenv("LLM_MAX_TOKENS", "320").strip()
+_max_tokens_raw = os.getenv("LLM_MAX_TOKENS", "700").strip()
 LLM_MAX_TOKENS = None if _max_tokens_raw == "" else int(_max_tokens_raw)
 
 MIN_AUDIO_BYTES = int(os.getenv("MIN_AUDIO_BYTES", "2500"))

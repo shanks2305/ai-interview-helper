@@ -12,14 +12,14 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta
       name="description"
-      content="Live interview copilot — questions, talking points, and session recaps."
+      content="Live interview copilot — questions, answers, and session recaps."
     />
     <title>Live Q&amp;A</title>
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2307080c'/%3E%3Crect x='3' y='3' width='26' height='26' rx='7' fill='url(%23g)'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop stop-color='%236ee7c5'/%3E%3Cstop offset='1' stop-color='%237c9cff'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E"
     />
-    <link rel="stylesheet" href="/live/styles.css?v=31" />
+    <link rel="stylesheet" href="/live/styles.css?v=34" />
   </head>
   <body data-view="idle">
     <a class="skip-link" href="#current">Skip to live answer</a>
@@ -34,30 +34,24 @@
         </div>
         <div class="nav-end">
           <button id="library-btn" type="button" class="ghost-btn" aria-pressed="false">Library</button>
-          <button id="new-session" type="button" class="ghost-btn">New session</button>
+          <button id="end-session" type="button" class="ghost-btn" disabled title="End session">
+            End session
+          </button>
+          <button id="new-session" type="button" class="ghost-btn" title="New session">New session</button>
           <p id="status" class="pill" data-state="checking" role="status" aria-live="polite">Connecting</p>
         </div>
       </header>
-
-      <div class="toolbar" id="mode-toolbar">
-        <p class="toolbar-label">Answer style</p>
-        <div class="mode-bar" id="mode-bar" role="radiogroup" aria-label="Answer mode"></div>
-      </div>
 
       <section class="live-stage" id="live-stage">
         <section class="current" id="current">
           <div class="current-head">
             <span class="tag">Question</span>
             <div class="current-actions">
-              <div id="view-bar" class="view-bar" hidden role="radiogroup" aria-label="Answer layout">
-                <button type="button" class="view-btn" role="radio" data-layout="points" aria-checked="true">Points</button>
-                <button type="button" class="view-btn" role="radio" data-layout="full" aria-checked="false">Full</button>
-              </div>
-              <button id="copy-answer" type="button" class="ghost-btn" hidden>Copy talking points</button>
+              <button id="copy-answer" type="button" class="ghost-btn" hidden>Copy answer</button>
             </div>
           </div>
           <p id="question" class="question is-placeholder">No question yet</p>
-          <span class="tag accent" id="answer-tag">Answer · 45s</span>
+          <span class="tag accent" id="answer-tag">Answer</span>
           <div id="answer" class="answer-body is-placeholder">
             Start listening in the desktop app, or paste a question that was not asked out loud.
           </div>
@@ -252,7 +246,7 @@
         <ul id="library-list" class="library-list"></ul>
       </section>
     </main>
-    <script src="/live/markdown.js?v=31"></script>
-    <script src="/live/app.js?v=31"></script>
+    <script src="/live/markdown.js?v=34"></script>
+    <script src="/live/app.js?v=34"></script>
   </body>
 </html>

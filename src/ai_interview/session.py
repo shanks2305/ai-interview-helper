@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from .modes import DEFAULT_ANSWER_MODE, answer_mode, normalize_answer_mode
+from .modes import DEFAULT_ANSWER_MODE, normalize_answer_mode
 
 MEMORY_TURNS = 8
 MEMORY_ANSWER_CHARS = 1500
@@ -280,7 +280,6 @@ def session_markdown(session: InterviewSession) -> str:
         question = (turn.question or "").strip() or "(no question)"
         answer = (turn.answer or "").strip() or "(no answer)"
         source = turn.source or "spoken"
-        mode = answer_mode(turn.answer_mode).title
         lines.extend(
             [
                 f"## {turn.index}. {question}",
@@ -288,7 +287,7 @@ def session_markdown(session: InterviewSession) -> str:
                 answer,
                 "",
                 (
-                    f"_{source} · {mode} · listen {format_ms(turn.listen_ms)} · "
+                    f"_{source} · listen {format_ms(turn.listen_ms)} · "
                     f"transcribe {format_ms(turn.stt_ms)} · "
                     f"draft {format_ms(turn.llm_ms)}_"
                 ),
@@ -305,12 +304,11 @@ def session_print_html(session: InterviewSession, *, autoprint: bool = False) ->
         question = html.escape((turn.question or "").strip() or "(no question)")
         answer = html.escape((turn.answer or "").strip() or "(no answer)")
         source = html.escape(turn.source or "spoken")
-        mode = html.escape(answer_mode(turn.answer_mode).title)
         turns_html.append(
             "<article class='turn'>"
             f"<h2>Q{html.escape(str(turn.index))}. {question}</h2>"
             f"<pre class='answer'>{answer}</pre>"
-            f"<p class='meta'>{source} · {mode} · listen {format_ms(turn.listen_ms)} · "
+            f"<p class='meta'>{source} · listen {format_ms(turn.listen_ms)} · "
             f"transcribe {format_ms(turn.stt_ms)} · draft {format_ms(turn.llm_ms)}</p>"
             "</article>"
         )

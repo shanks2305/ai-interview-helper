@@ -88,7 +88,11 @@
           </div>
           <p class="shortcut-hint">
             <kbd id="listen-shortcut">⌘⇧L</kbd>
-            listen / pause from anywhere
+            listen / pause ·
+            <kbd id="end-session-shortcut">⌘⇧E</kbd>
+            end ·
+            <kbd id="new-session-shortcut">⌘⇧N</kbd>
+            new session
           </p>
         </section>
 
@@ -104,7 +108,9 @@
           </div>
           <div class="actions">
             <button id="stop" type="button">Pause</button>
-            <button id="end-session" type="button" class="ghost">End session</button>
+            <button id="end-session" type="button" class="ghost" title="End session (⌘⇧E)">
+              End session
+            </button>
           </div>
           <button id="open-live-room" type="button" class="text-link">
             Open live page
@@ -117,7 +123,9 @@
           <p class="lede">Session ended. Recap is on the live page.</p>
           <div class="actions">
             <button id="open-live-done" type="button">Open recap</button>
-            <button id="new-session" type="button" class="ghost">Listen again</button>
+            <button id="new-session" type="button" class="ghost" title="New session (⌘⇧N)">
+              Listen again
+            </button>
           </div>
         </section>
       </main>

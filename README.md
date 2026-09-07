@@ -13,7 +13,9 @@ uv run ai-interview
 
 That starts the API on `http://127.0.0.1:8000`, then opens the Electron capture window. The CLI owns the API process; Electron does not start a second one.
 
-Default source is **mic + meeting audio** so Zoom/Meet through headphones is transcribed, not only your laptop mic. In the capture window, pick **Mic + meeting**, **Meeting only**, or **Microphone only**, then **Test input** and watch the meters. Speak or play a few seconds of the call: the bar should sit on **Good**. Raise **Input gain** if it stays **Too quiet**; lower it if it hits **Clipping**. Open live Q&A from the desktop button, or go to `http://127.0.0.1:8000/live/`. On that page, open **Interview context** and paste the job description and resume once; later answers stay grounded in that role. Use the **15s / 45s / STAR / Design / Bullets** control to pick how the next answer is drafted. The live card defaults to a **talking-points** layout (3–5 bullets plus one example); switch to **Full** when you need the complete draft. **New session** archives the current interview and starts a fresh one without dropping that context or answer mode.
+Global capture shortcuts (work even while Zoom/Meet is focused): **⌘⇧L** listen/pause, **⌘⇧E** end session, **⌘⇧N** new session (Ctrl+Shift on Windows/Linux). The live page uses the same chords for end and new session.
+
+Default source is **mic + meeting audio** so Zoom/Meet through headphones is transcribed, not only your laptop mic. In the capture window, pick **Mic + meeting**, **Meeting only**, or **Microphone only**, then **Test input** and watch the meters. Speak or play a few seconds of the call: the bar should sit on **Good**. Raise **Input gain** if it stays **Too quiet**; lower it if it hits **Clipping**. Open live Q&A from the desktop button, or go to `http://127.0.0.1:8000/live/`. On that page, open **Interview context** and paste the job description and resume once; later answers stay grounded in that role. **New session** archives the current interview and starts a fresh one without dropping that context.
 
 API only (no desktop), for example when the live page is on another device:
 

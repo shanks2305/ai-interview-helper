@@ -445,44 +445,54 @@ def _answer(text: str, reason: Reason) -> ClipVerdict:
 
 
 def _extract_question(text: str) -> str:
-    stripped = _strip_overlap_markers(text).strip()
+    stripped = _strip_leading_filler(_strip_overlap_markers(text)).strip()
     if not stripped:
         return ""
-    clauses = [part.strip(" ,;") for part in _CLAUSE_RE.split(stripped) if part.strip(" ,;")]
-    if len(clauses) <= 1:
-        return _strip_leading_filler(stripped)
+    parts = _clause_parts(stripped)
+    if len(parts) <= 1:
+        return stripped
 
-    scored: list[tuple[int, int, str]] = []
-    for index, clause in enumerate(clauses):
-        cleaned = _clean_speech(clause)
-        if not cleaned:
-            continue
-        score = _clause_score(cleaned)
-        scored.append((score, index, clause))
-    if not scored:
-        return _strip_leading_filler(stripped)
-    best_score = max(item[0] for item in scored)
-    if best_score <= 0:
-        return _strip_leading_filler(stripped)
-    best = max((item for item in scored if item[0] == best_score), key=lambda item: item[1])
-    return best[2]
+    start = 0
+    while start < len(parts) and _is_chitchat_clause(parts[start][0]):
+        start += 1
+    end = len(parts)
+    while end > start and _is_chitchat_clause(parts[end - 1][0]):
+        end -= 1
+    kept = parts[start:end]
+    if not kept:
+        return stripped
+    return "".join(clause + sep for clause, sep in kept).strip()
 
 
-def _clause_score(text: str) -> int:
-    folded = _fold(text)
-    score = 0
-    if folded.endswith("?") or text.rstrip().endswith("?"):
-        score += 3
-    if folded.startswith(_QUESTION_PREFIXES):
-        score += 3
-    elif any(folded.startswith(prefix) or f" {prefix}" in f" {folded}" for prefix in _QUESTION_PREFIXES):
-        score += 2
-    content = _content_tokens(folded)
-    if len(content) >= 2:
-        score += 1
-    if _non_question_reason(text, []) is not None:
-        score -= 3
-    return score
+def _clause_parts(text: str) -> list[tuple[str, str]]:
+    parts: list[tuple[str, str]] = []
+    last = 0
+    for match in _CLAUSE_RE.finditer(text):
+        clause = text[last : match.start()].strip(" ,;")
+        if clause:
+            parts.append((clause, match.group(0)))
+        last = match.end()
+    tail = text[last:].strip(" ,;")
+    if tail:
+        parts.append((tail, ""))
+    return parts
+
+
+def _is_chitchat_clause(clause: str) -> bool:
+    cleaned = _clean_speech(clause)
+    if not cleaned:
+        return True
+    folded = _fold(cleaned)
+    tokens = _tokens(folded)
+    if not tokens:
+        return True
+    if _looks_like_question(folded):
+        return False
+    if _is_greeting(folded, tokens):
+        return True
+    if all(token in _FILLER_TOKENS or token in _ACK_TOKENS for token in tokens):
+        return True
+    return False
 
 
 def _non_question_reason(text: str, previous: list[str]) -> Reason | None:

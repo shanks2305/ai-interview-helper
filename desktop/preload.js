@@ -13,12 +13,28 @@ contextBridge.exposeInMainWorld("interviewApp", {
   wsUrl: ws.toString(),
   token,
   listenShortcut: "CommandOrControl+Shift+L",
+  endSessionShortcut: "CommandOrControl+Shift+E",
+  newSessionShortcut: "CommandOrControl+Shift+N",
   onToggleListen(callback) {
     const listener = () => {
       callback();
     };
     ipcRenderer.on("interview:toggle-listen", listener);
     return () => ipcRenderer.removeListener("interview:toggle-listen", listener);
+  },
+  onEndSession(callback) {
+    const listener = () => {
+      callback();
+    };
+    ipcRenderer.on("interview:end-session", listener);
+    return () => ipcRenderer.removeListener("interview:end-session", listener);
+  },
+  onNewSession(callback) {
+    const listener = () => {
+      callback();
+    };
+    ipcRenderer.on("interview:new-session", listener);
+    return () => ipcRenderer.removeListener("interview:new-session", listener);
   },
   setListening(isListening) {
     ipcRenderer.send("interview:listening", Boolean(isListening));

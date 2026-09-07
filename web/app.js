@@ -28,9 +28,6 @@ const askErrorEl = document.getElementById("ask-error");
 const askShortcutEl = document.getElementById("ask-shortcut");
 const copyAnswerBtn = document.getElementById("copy-answer");
 const answerTagEl = document.getElementById("answer-tag");
-const modeBarEl = document.getElementById("mode-bar");
-const modeToolbarEl = document.getElementById("mode-toolbar");
-const viewBarEl = document.getElementById("view-bar");
 const contextCardEl = document.getElementById("context-card");
 const contextFormEl = document.getElementById("context-form");
 const contextRoleEl = document.getElementById("context-role");
@@ -41,6 +38,7 @@ const contextHintEl = document.getElementById("context-hint");
 const contextSaveEl = document.getElementById("context-save");
 const contextClearEl = document.getElementById("context-clear");
 const contextErrorEl = document.getElementById("context-error");
+const endSessionBtn = document.getElementById("end-session");
 const newSessionBtn = document.getElementById("new-session");
 
 const ACCESS_TOKEN = new URLSearchParams(location.search).get("token") || "";
@@ -80,25 +78,13 @@ let libraryLoadId = 0;
 let libraryOpenId = 0;
 let wakeLock = null;
 let wakeLockGen = 0;
-const COPY_LABEL = "Copy talking points";
+const COPY_LABEL = "Copy answer";
 const CONTEXT_STORAGE_KEY = "ai-interview-context";
-const MODE_STORAGE_KEY = "ai-interview-answer-mode";
-const VIEW_STORAGE_KEY = "ai-interview-answer-view";
 const CONTEXT_HINT = "Paste the JD and resume once — used for every answer";
 const DEFAULT_ANSWER_MODE = "spoken_45";
-const DEFAULT_ANSWER_MODES = [
-  { id: "spoken_15", label: "15s", title: "15s spoken", markdown: false },
-  { id: "spoken_45", label: "45s", title: "45s spoken", markdown: false },
-  { id: "star", label: "STAR", title: "STAR", markdown: true },
-  { id: "system_design", label: "Design", title: "System-design outline", markdown: true },
-  { id: "bullets", label: "Bullets", title: "Glanceable bullets", markdown: true },
-];
 let contextDirty = false;
 let contextSeeded = false;
-let answerModes = DEFAULT_ANSWER_MODES;
 let currentAnswerMode = DEFAULT_ANSWER_MODE;
-let modeSeeded = false;
-let answerLayout = "points";
 
 function emptyContext() {
   return { role: "", company: "", job_description: "", resume: "" };
@@ -213,144 +199,23 @@ function applyContext(payload, { force = false, markSaved = false } = {}) {
   fillContextForm(payload, { markSaved });
 }
 
-function normalizeAnswerMode(value) {
-  const key = String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[-\s]/g, "_");
-  if (answerModes.some((mode) => mode.id === key)) {
-    return key;
-  }
-  const aliases = {
-    "15": "spoken_15",
-    "15s": "spoken_15",
-    "45": "spoken_45",
-    "45s": "spoken_45",
-    spoken: "spoken_45",
-    design: "system_design",
-    outline: "system_design",
-    glanceable: "bullets",
-    bullet: "bullets",
-    behavioral: "star",
-  };
-  return aliases[key] || DEFAULT_ANSWER_MODE;
-}
-
-function modeSpec(id) {
-  const value = normalizeAnswerMode(id);
-  return (
-    answerModes.find((mode) => mode.id === value) ||
-    answerModes.find((mode) => mode.id === DEFAULT_ANSWER_MODE) ||
-    answerModes[0]
-  );
-}
-
-function modeUsesMarkdown(id) {
-  return Boolean(modeSpec(id)?.markdown);
-}
-
-function loadStoredAnswerMode() {
-  try {
-    return normalizeAnswerMode(localStorage.getItem(MODE_STORAGE_KEY) || DEFAULT_ANSWER_MODE);
-  } catch {
-    return DEFAULT_ANSWER_MODE;
-  }
-}
-
-function saveAnswerMode(mode) {
-  try {
-    localStorage.setItem(MODE_STORAGE_KEY, normalizeAnswerMode(mode));
-  } catch {
-    // Private mode / quota.
-  }
+function normalizeAnswerMode(_value) {
+  return DEFAULT_ANSWER_MODE;
 }
 
 function updateAnswerTag() {
-  if (!answerTagEl) {
-    return;
+  if (answerTagEl) {
+    answerTagEl.textContent = "Answer";
   }
-  const spec = modeSpec(current.answer_mode || currentAnswerMode);
-  if (answerLayout === "points" && canShowPoints(current.answer)) {
-    answerTagEl.textContent = "Talking points";
-    return;
-  }
-  answerTagEl.textContent = `Answer · ${spec.label}`;
 }
 
-function applyAnswerMode(mode) {
-  currentAnswerMode = normalizeAnswerMode(mode);
-  saveAnswerMode(currentAnswerMode);
-  if (modeBarEl) {
-    for (const btn of modeBarEl.querySelectorAll(".mode-btn")) {
-      btn.setAttribute("aria-checked", btn.dataset.mode === currentAnswerMode ? "true" : "false");
-    }
-  }
+function applyAnswerMode(_mode) {
+  currentAnswerMode = DEFAULT_ANSWER_MODE;
   updateAnswerTag();
 }
 
-function renderModeBar() {
-  if (!modeBarEl) {
-    return;
-  }
-  modeBarEl.replaceChildren();
-  for (const mode of answerModes) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "mode-btn";
-    btn.dataset.mode = mode.id;
-    btn.setAttribute("role", "radio");
-    btn.setAttribute("aria-checked", mode.id === currentAnswerMode ? "true" : "false");
-    btn.title = mode.title || mode.label;
-    btn.textContent = mode.label;
-    btn.addEventListener("click", () => {
-      submitAnswerMode(mode.id);
-    });
-    modeBarEl.append(btn);
-  }
-}
-
-async function submitAnswerMode(mode, { quiet = false } = {}) {
-  applyAnswerMode(mode);
-  try {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: "set_answer_mode", mode: currentAnswerMode }));
-      return;
-    }
-    const response = await fetch(withToken("/api/session/answer-mode"), {
-      method: "PUT",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ mode: currentAnswerMode }),
-    });
-    if (!response.ok && !quiet) {
-      throw new Error("Could not save answer mode.");
-    }
-  } catch {
-    if (!quiet) {
-      setStatus("down", "Could not save answer mode");
-    }
-  }
-}
-
-function seedAnswerMode(event) {
-  if (Array.isArray(event.answer_modes) && event.answer_modes.length) {
-    answerModes = event.answer_modes;
-    renderModeBar();
-  }
-  const server = normalizeAnswerMode(event.answer_mode || event.session?.answer_mode);
-  const local = loadStoredAnswerMode();
-  if (server && server !== DEFAULT_ANSWER_MODE) {
-    applyAnswerMode(server);
-    modeSeeded = true;
-    return;
-  }
-  if (!modeSeeded && local !== server) {
-    applyAnswerMode(local);
-    modeSeeded = true;
-    submitAnswerMode(local, { quiet: true });
-    return;
-  }
-  applyAnswerMode(server || local);
-  modeSeeded = true;
+function seedAnswerMode(_event) {
+  applyAnswerMode(DEFAULT_ANSWER_MODE);
 }
 
 function setStatus(state, label) {
@@ -368,11 +233,6 @@ function setView(view) {
   const library = view === "library";
   liveStageEl.hidden = library;
   dashboardEl.hidden = !ended;
-  if (modeToolbarEl) {
-    modeToolbarEl.hidden = library;
-  } else if (modeBarEl) {
-    modeBarEl.hidden = library;
-  }
   if (libraryEl) {
     libraryEl.hidden = !library;
   }
@@ -383,6 +243,7 @@ function setView(view) {
   subtitleEl.textContent = library ? "Session library" : ended ? "Session recap" : "Live copilot";
   syncWakeLock();
   syncLibraryUrl();
+  syncSessionButtons();
   if (library) {
     loadLibrary();
     return;
@@ -762,27 +623,11 @@ function pickExample(items) {
 }
 
 function loadAnswerLayout() {
-  try {
-    const stored = localStorage.getItem(VIEW_STORAGE_KEY);
-    return stored === "full" ? "full" : "points";
-  } catch {
-    return "points";
-  }
+  return "full";
 }
 
-function saveAnswerLayout(layout) {
-  answerLayout = layout === "full" ? "full" : "points";
-  try {
-    localStorage.setItem(VIEW_STORAGE_KEY, answerLayout);
-  } catch {
-    // Private mode / quota.
-  }
-  if (viewBarEl) {
-    for (const btn of viewBarEl.querySelectorAll(".view-btn")) {
-      btn.setAttribute("aria-checked", btn.dataset.layout === answerLayout ? "true" : "false");
-    }
-  }
-  document.body.dataset.layout = answerLayout;
+function saveAnswerLayout(_layout) {
+  document.body.dataset.layout = "full";
   updateAnswerTag();
   if (current.answer) {
     setAnswerText(current.answer);
@@ -826,9 +671,6 @@ function updateCopyButton() {
   const ready = canShowPoints(current.answer);
   copyAnswerBtn.hidden = !ready;
   copyAnswerBtn.textContent = COPY_LABEL;
-  if (viewBarEl) {
-    viewBarEl.hidden = !ready;
-  }
 }
 
 function shouldRenderMarkdown(source, text, mode) {
@@ -838,10 +680,7 @@ function shouldRenderMarkdown(source, text, mode) {
   if (typeof window.renderMarkdown !== "function") {
     return false;
   }
-  if (modeUsesMarkdown(mode || current.answer_mode || currentAnswerMode)) {
-    return true;
-  }
-  return source === "typed";
+  return true;
 }
 
 function setRichText(el, text, source, mode) {
@@ -870,16 +709,6 @@ function setAnswerText(text) {
   if (!value) {
     answerEl.classList.remove("is-markdown", "is-points");
     answerEl.textContent = PLACEHOLDER_ANSWER;
-    updateCopyButton();
-    updateAnswerTag();
-    return;
-  }
-  const points =
-    normalizeTalkingPoints(current.talking_points) ||
-    (canShowPoints(value) ? extractTalkingPoints(value) : null);
-  if (answerLayout === "points" && canShowPoints(value) && points?.bullets?.length) {
-    current.talking_points = points;
-    renderTalkingPoints(answerEl, points);
     updateCopyButton();
     updateAnswerTag();
     return;
@@ -1510,6 +1339,41 @@ async function startNewSession() {
   }
 }
 
+function syncSessionButtons() {
+  if (endSessionBtn) {
+    endSessionBtn.disabled = currentView === "ended" || currentView === "library" || !latestSession?.active;
+  }
+}
+
+async function endSession() {
+  if (!latestSession?.active || currentView === "ended" || currentView === "library") {
+    return;
+  }
+  if (endSessionBtn) {
+    endSessionBtn.disabled = true;
+  }
+  try {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "end_session" }));
+      return;
+    }
+    const response = await fetch(withToken("/api/session/end"), {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    if (!response.ok) {
+      throw new Error("Could not end the session.");
+    }
+    const payload = await response.json();
+    if (payload.session) {
+      handleEvent({ type: "session_summary", session: payload.session });
+    }
+  } catch {
+    setStatus("down", "Could not end session");
+    syncSessionButtons();
+  }
+}
+
 function setAskError(message) {
   if (!askErrorEl) {
     return;
@@ -1579,6 +1443,23 @@ if (askShortcutEl) {
   askShortcutEl.append(first, second, document.createTextNode(" to send"));
 }
 
+function shortcutChord(letter) {
+  return isMac ? `⌘⇧${letter}` : `Ctrl+Shift+${letter}`;
+}
+
+function isModShiftKey(event, code) {
+  return (event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.code === code;
+}
+
+if (endSessionBtn) {
+  endSessionBtn.title = `End session (${shortcutChord("E")})`;
+  endSessionBtn.setAttribute("aria-keyshortcuts", "Meta+Shift+E Control+Shift+E");
+}
+if (newSessionBtn) {
+  newSessionBtn.title = `New session (${shortcutChord("N")})`;
+  newSessionBtn.setAttribute("aria-keyshortcuts", "Meta+Shift+N Control+Shift+N");
+}
+
 askCardEl?.addEventListener("toggle", () => {
   if (askCardEl.open) {
     askInputEl?.focus();
@@ -1610,17 +1491,21 @@ newSessionBtn?.addEventListener("click", () => {
   startNewSession();
 });
 
+endSessionBtn?.addEventListener("click", () => {
+  endSession();
+});
+
 libraryBtn?.addEventListener("click", () => {
   toggleLibrary();
 });
 
 copyAnswerBtn?.addEventListener("click", async () => {
-  const points = talkingPoints(current.answer, current.talking_points);
-  if (!points) {
+  const text = (current.answer || "").trim();
+  if (!canShowPoints(text)) {
     return;
   }
   try {
-    await navigator.clipboard.writeText(points);
+    await navigator.clipboard.writeText(text);
     copyAnswerBtn.textContent = "Copied";
     window.setTimeout(() => {
       copyAnswerBtn.textContent = COPY_LABEL;
@@ -1630,13 +1515,6 @@ copyAnswerBtn?.addEventListener("click", async () => {
   }
 });
 
-viewBarEl?.addEventListener("click", (event) => {
-  const btn = event.target.closest(".view-btn");
-  if (!btn?.dataset.layout) {
-    return;
-  }
-  saveAnswerLayout(btn.dataset.layout);
-});
 document.addEventListener("visibilitychange", syncWakeLock);
 window.addEventListener("resize", () => {
   if (currentView === "ended" && latestSession) {
@@ -1652,6 +1530,19 @@ librarySearchEl?.addEventListener("input", () => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.repeat) {
+    return;
+  }
+  if (isModShiftKey(event, "KeyE")) {
+    event.preventDefault();
+    endSession();
+    return;
+  }
+  if (isModShiftKey(event, "KeyN")) {
+    event.preventDefault();
+    startNewSession();
+    return;
+  }
   if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) {
     return;
   }
@@ -1676,9 +1567,8 @@ if (window.interviewApp) {
   document.body.classList.add("in-electron");
 }
 
-renderModeBar();
-applyAnswerMode(loadStoredAnswerMode());
-saveAnswerLayout(loadAnswerLayout());
+applyAnswerMode(DEFAULT_ANSWER_MODE);
+document.body.dataset.layout = "full";
 const bootParams = new URLSearchParams(location.search);
 const bootQuery = (bootParams.get("q") || "").trim();
 const bootSession = (bootParams.get("session") || "").trim();

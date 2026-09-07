@@ -154,7 +154,7 @@ class HubSnapshotTests(unittest.TestCase):
         self.assertEqual(snap["pairs"], [])
         self.assertIsNone(snap["session"])
         self.assertEqual(snap["answer_mode"], "spoken_45")
-        self.assertEqual(len(snap["answer_modes"]), 5)
+        self.assertEqual(len(snap["answer_modes"]), 1)
 
         hub.apply({"type": "status", "state": "listening", "detail": "Capturing question"})
         hub.apply({"type": "question", "text": "What is a mutex?", "source": "spoken"})
@@ -276,8 +276,8 @@ class HubContextTests(unittest.IsolatedAsyncioTestCase):
         hub = LiveHub()
         mode = await hub.submit_answer_mode("star")
         snap = hub.snapshot()
-        self.assertEqual(mode, "star")
-        self.assertEqual(snap["answer_mode"], "star")
+        self.assertEqual(mode, "spoken_45")
+        self.assertEqual(snap["answer_mode"], "spoken_45")
         self.assertIsNone(snap["session"])
 
     def test_attach_pipeline_seeds_pending_answer_mode(self) -> None:
@@ -287,7 +287,7 @@ class HubContextTests(unittest.IsolatedAsyncioTestCase):
         hub.answer_mode = "bullets"
         pipeline = InterviewPipeline(lambda event: None)
         hub.attach_pipeline(pipeline)
-        self.assertEqual(pipeline._pending_answer_mode, "bullets")
+        self.assertEqual(pipeline._pending_answer_mode, "spoken_45")
 
     async def test_start_new_session_clears_live_pairs(self) -> None:
         import tempfile
@@ -307,5 +307,25 @@ class HubContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snap["pairs"], [])
         self.assertEqual(snap["question"], "")
         self.assertTrue(snap["session"]["active"])
+        store.close()
+        tmp.cleanup()
+
+    async def test_end_session_archives_and_shows_summary(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from ai_interview.pipeline import InterviewPipeline
+        from ai_interview.store import SessionStore
+
+        tmp = tempfile.TemporaryDirectory()
+        store = SessionStore(Path(tmp.name) / "sessions.db")
+        hub = LiveHub()
+        pipeline = InterviewPipeline(hub.publish, store=store)
+        hub.attach_pipeline(pipeline)
+        await hub.start_new_session()
+        hub.apply({"type": "qa", "question": "Q", "answer": "A", "source": "spoken"})
+        await hub.end_session()
+        snap = hub.snapshot()
+        self.assertFalse(snap["session"]["active"])
         store.close()
         tmp.cleanup()

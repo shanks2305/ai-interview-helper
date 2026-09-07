@@ -23,12 +23,14 @@ const HEALTH_URL = `${API_BASE}/health`;
 // Standalone `npm start` in desktop/ may start the API as a fallback.
 const PROJECT_ROOT = path.join(__dirname, "..");
 const LISTEN_SHORTCUT = "CommandOrControl+Shift+L";
+const END_SESSION_SHORTCUT = "CommandOrControl+Shift+E";
+const NEW_SESSION_SHORTCUT = "CommandOrControl+Shift+N";
 
 let backendProcess = null;
 let startedBackend = false;
 let mainWindow = null;
 let isQuitting = false;
-let pendingToggleListen = false;
+const pendingIpc = new Set();
 
 function pythonExecutable() {
   const venvPython =
@@ -190,12 +192,27 @@ async function ensureMicrophoneAccess() {
   }
 }
 
-function sendToggleListen() {
+function sendRenderer(channel) {
   if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) {
-    pendingToggleListen = true;
+    pendingIpc.add(channel);
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createWindow({ show: false });
+    }
     return;
   }
-  mainWindow.webContents.send("interview:toggle-listen");
+  mainWindow.webContents.send(channel);
+}
+
+function sendToggleListen() {
+  sendRenderer("interview:toggle-listen");
+}
+
+function sendEndSession() {
+  sendRenderer("interview:end-session");
+}
+
+function sendNewSession() {
+  sendRenderer("interview:new-session");
 }
 
 function createWindow({ show = true } = {}) {
@@ -224,10 +241,10 @@ function createWindow({ show = true } = {}) {
   window.loadURL(API_BASE);
 
   window.webContents.on("did-finish-load", () => {
-    if (pendingToggleListen) {
-      pendingToggleListen = false;
-      window.webContents.send("interview:toggle-listen");
+    for (const channel of pendingIpc) {
+      window.webContents.send(channel);
     }
+    pendingIpc.clear();
   });
 
   window.on("close", (event) => {
@@ -260,6 +277,8 @@ function trayHandlers() {
   return {
     onShow: showWindow,
     onToggle: sendToggleListen,
+    onEndSession: sendEndSession,
+    onNewSession: sendNewSession,
     onQuit: () => {
       isQuitting = true;
       app.quit();
@@ -267,16 +286,22 @@ function trayHandlers() {
   };
 }
 
-function registerListenShortcut() {
-  const registered = globalShortcut.register(LISTEN_SHORTCUT, () => {
+function registerGlobalShortcut(accelerator, action) {
+  const registered = globalShortcut.register(accelerator, () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow({ show: false });
     }
-    sendToggleListen();
+    action();
   });
   if (!registered) {
-    console.error(`Could not register global shortcut ${LISTEN_SHORTCUT}`);
+    console.error(`Could not register global shortcut ${accelerator}`);
   }
+}
+
+function registerSessionShortcuts() {
+  registerGlobalShortcut(LISTEN_SHORTCUT, sendToggleListen);
+  registerGlobalShortcut(END_SESSION_SHORTCUT, sendEndSession);
+  registerGlobalShortcut(NEW_SESSION_SHORTCUT, sendNewSession);
 }
 
 ipcMain.on("interview:listening", (_event, isListening) => {
@@ -326,7 +351,7 @@ async function bootstrap() {
   await ensureMicrophoneAccess();
   createTray(trayHandlers());
   createWindow();
-  registerListenShortcut();
+  registerSessionShortcuts();
 }
 
 app.whenReady().then(() => {

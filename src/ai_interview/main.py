@@ -174,6 +174,12 @@ async def api_session_new() -> dict[str, Any]:
     return {"ok": "started", "session": hub.session}
 
 
+@app.post("/api/session/end")
+async def api_session_end() -> dict[str, Any]:
+    await hub.end_session()
+    return {"ok": "ended", "session": hub.session}
+
+
 @app.websocket("/ws/live")
 async def live_socket(websocket: WebSocket) -> None:
     if not await _accept_socket(websocket):
@@ -204,6 +210,8 @@ async def live_socket(websocket: WebSocket) -> None:
                 await hub.submit_answer_mode(str(event.get("mode") or event.get("answer_mode") or ""))
             elif event_type == "new_session":
                 await hub.start_new_session()
+            elif event_type == "end_session":
+                await hub.end_session()
     except WebSocketDisconnect:
         pass
     finally:

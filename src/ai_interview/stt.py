@@ -155,7 +155,7 @@ def _transcribe_bytes(payload: bytes, mime_type: str) -> str:
     segments, _info = _model.transcribe(
         samples,
         language="en",
-        vad_filter=duration_s > 18,
+        vad_filter=duration_s > 180,
         without_timestamps=True,
         beam_size=1,
         best_of=1,

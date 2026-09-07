@@ -34,6 +34,19 @@ class ClassifyClipTests(unittest.TestCase):
         self.assertEqual(overlap.action, "answer")
         self.assertIn("time complexity", overlap.text.lower())
 
+    def test_keeps_long_multi_sentence_questions(self) -> None:
+        spoken = (
+            "Okay. Imagine you have a payments API at about 10k TPS. "
+            "Walk me through how you would design idempotency. "
+            "What happens if the client retries after a timeout?"
+        )
+        verdict = classify_clip(spoken)
+        self.assertEqual(verdict.action, "answer")
+        self.assertIn("10k TPS", verdict.text)
+        self.assertIn("idempotency", verdict.text.lower())
+        self.assertIn("retries", verdict.text.lower())
+        self.assertFalse(verdict.text.lower().startswith("okay"))
+
     def test_answers_real_interview_questions(self) -> None:
         samples = [
             "What is a REST API?",
