@@ -55,19 +55,26 @@ def context_block(
     resume_text = _clip(resume, CONTEXT_RESUME_CHARS)
     if not any((role_text, company_text, jd_text, resume_text)):
         return ""
-    lines = ["Candidate context for this interview:"]
+    lines: list[str] = []
+    context_bits: list[str] = []
     if role_text:
-        lines.append(f"- Role: {role_text}")
+        context_bits.append(f"- Role: {role_text}")
     if company_text:
-        lines.append(f"- Company: {company_text}")
-    if jd_text:
-        lines.extend(["", "Job description:", jd_text])
+        context_bits.append(f"- Company: {company_text}")
     if resume_text:
-        lines.extend(["", "Resume / background:", resume_text])
+        if context_bits:
+            context_bits.append("")
+        context_bits.append(resume_text)
+    if context_bits:
+        lines.extend(["Candidate context:", *context_bits])
+    if jd_text:
+        if lines:
+            lines.append("")
+        lines.extend(["Target job description:", jd_text])
     lines.extend(
         [
             "",
-            "Use this when it fits: prefer their stack, teams, and stories over generic examples.",
+            "Use these to tailor examples, technologies, and experience. Never claim the candidate used a technology or owned a responsibility unless supported by the candidate context.",
             "Do not recite the resume or job description unless asked. Do not invent employers that contradict it.",
         ]
     )

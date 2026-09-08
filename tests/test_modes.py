@@ -40,6 +40,7 @@ class AnswerModeTests(unittest.TestCase):
         self.assertIn("**explanation:**", SYSTEM_PROMPT.lower())
         self.assertIn("**example:**", SYSTEM_PROMPT.lower())
         self.assertIn("code", SYSTEM_PROMPT.lower())
+        self.assertIn("never claim the candidate used a technology", " ".join(SYSTEM_PROMPT.split()).lower())
 
     def test_token_caps(self) -> None:
         with patch("ai_interview.modes.LLM_MAX_TOKENS", 320):

@@ -28,6 +28,7 @@ const askSubmitEl = document.getElementById("ask-submit");
 const askErrorEl = document.getElementById("ask-error");
 const askShortcutEl = document.getElementById("ask-shortcut");
 const copyAnswerBtn = document.getElementById("copy-answer");
+const speakAnswerBtn = document.getElementById("speak-answer");
 const answerTagEl = document.getElementById("answer-tag");
 const contextCardEl = document.getElementById("context-card");
 const contextFormEl = document.getElementById("context-form");
@@ -80,6 +81,12 @@ let libraryOpenId = 0;
 let wakeLock = null;
 let wakeLockGen = 0;
 const COPY_LABEL = "Copy answer";
+const SPEAK_LABEL = "Speak";
+const STOP_SPEAK_LABEL = "Stop";
+const speechSupported = typeof window.speechSynthesis !== "undefined";
+let speakUtterance = null;
+let speaking = false;
+let speakKeepAlive = 0;
 const CONTEXT_STORAGE_KEY = "ai-interview-context";
 const CONTEXT_HINT = "Paste the JD and resume once — used for every answer";
 const DEFAULT_ANSWER_MODE = "spoken_45";
@@ -427,6 +434,9 @@ function prependPair(question, answer, source, mode) {
 }
 
 function archiveCurrent() {
+  if (speaking) {
+    stopSpeaking();
+  }
   if (current.question && current.answer && !isSkipAnswer(current.answer) && current.answer !== PLACEHOLDER_ANSWER) {
     prependPair(current.question, current.answer, current.source, current.answer_mode);
   }
@@ -672,6 +682,127 @@ function updateCopyButton() {
   const ready = canShowPoints(current.answer);
   copyAnswerBtn.hidden = !ready;
   copyAnswerBtn.textContent = COPY_LABEL;
+  updateSpeakButton();
+}
+
+function answerSpeechText(text) {
+  return String(text || "")
+    .replace(/```[\s\S]*?```/g, "\n")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+[.)]\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function pickSpeechVoice() {
+  const voices = window.speechSynthesis.getVoices();
+  const english = voices.filter((voice) => /^en\b/i.test(voice.lang || ""));
+  const preferred =
+    english.find((voice) => /samantha|daniel|siri|google us english|microsoft aria|natural/i.test(voice.name)) ||
+    english.find((voice) => voice.localService) ||
+    english[0] ||
+    voices.find((voice) => voice.localService) ||
+    voices[0];
+  return preferred || null;
+}
+
+function clearSpeakKeepAlive() {
+  if (speakKeepAlive) {
+    window.clearInterval(speakKeepAlive);
+    speakKeepAlive = 0;
+  }
+}
+
+function startSpeakKeepAlive() {
+  clearSpeakKeepAlive();
+  speakKeepAlive = window.setInterval(() => {
+    if (!window.speechSynthesis.speaking) {
+      clearSpeakKeepAlive();
+      return;
+    }
+    window.speechSynthesis.pause();
+    window.speechSynthesis.resume();
+  }, 12000);
+}
+
+function stopSpeaking() {
+  speaking = false;
+  speakUtterance = null;
+  clearSpeakKeepAlive();
+  if (speechSupported) {
+    window.speechSynthesis.cancel();
+  }
+  updateSpeakButton();
+}
+
+function updateSpeakButton() {
+  if (!speakAnswerBtn) {
+    return;
+  }
+  if (!speechSupported) {
+    speakAnswerBtn.hidden = true;
+    return;
+  }
+  const ready = canShowPoints(current.answer);
+  speakAnswerBtn.hidden = !ready;
+  speakAnswerBtn.setAttribute("aria-pressed", speaking ? "true" : "false");
+  speakAnswerBtn.textContent = speaking ? STOP_SPEAK_LABEL : SPEAK_LABEL;
+}
+
+function startSpeaking() {
+  const text = answerSpeechText(current.answer);
+  if (!speechSupported || !canShowPoints(current.answer) || !text) {
+    return;
+  }
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 1.04;
+  utterance.pitch = 1;
+  const voice = pickSpeechVoice();
+  if (voice) {
+    utterance.voice = voice;
+    if (voice.lang) {
+      utterance.lang = voice.lang;
+    }
+  } else {
+    utterance.lang = "en-US";
+  }
+  utterance.onend = () => {
+    if (speakUtterance !== utterance) {
+      return;
+    }
+    speaking = false;
+    speakUtterance = null;
+    clearSpeakKeepAlive();
+    updateSpeakButton();
+  };
+  utterance.onerror = () => {
+    if (speakUtterance !== utterance) {
+      return;
+    }
+    speaking = false;
+    speakUtterance = null;
+    clearSpeakKeepAlive();
+    updateSpeakButton();
+  };
+  speakUtterance = utterance;
+  speaking = true;
+  updateSpeakButton();
+  window.speechSynthesis.speak(utterance);
+  startSpeakKeepAlive();
+}
+
+function toggleSpeak() {
+  if (speaking) {
+    stopSpeaking();
+    return;
+  }
+  startSpeaking();
 }
 
 function shouldRenderMarkdown(source, text, mode) {
@@ -707,6 +838,9 @@ function setAnswerText(text) {
   answerEl.classList.toggle("is-placeholder", !value);
   answerEl.classList.toggle("is-skip", skipped);
   answerEl.classList.toggle("is-drafting", value === "Drafting…");
+  if (!canShowPoints(value) && speaking) {
+    stopSpeaking();
+  }
   if (!value) {
     answerEl.classList.remove("is-markdown", "is-points");
     answerEl.textContent = PLACEHOLDER_ANSWER;
@@ -1527,6 +1661,10 @@ if (newSessionBtn) {
   newSessionBtn.title = `New session (${shortcutChord("N")})`;
   newSessionBtn.setAttribute("aria-keyshortcuts", "Meta+Shift+N Control+Shift+N");
 }
+if (speakAnswerBtn) {
+  speakAnswerBtn.title = `Speak answer (${shortcutChord("S")})`;
+  speakAnswerBtn.setAttribute("aria-keyshortcuts", "Meta+Shift+S Control+Shift+S");
+}
 
 askCardEl?.addEventListener("toggle", () => {
   if (askCardEl.open) {
@@ -1591,6 +1729,10 @@ copyAnswerBtn?.addEventListener("click", async () => {
   }
 });
 
+speakAnswerBtn?.addEventListener("click", () => {
+  toggleSpeak();
+});
+
 document.addEventListener("visibilitychange", syncWakeLock);
 window.addEventListener("resize", () => {
   if (currentView === "ended" && latestSession) {
@@ -1617,6 +1759,11 @@ document.addEventListener("keydown", (event) => {
   if (isModShiftKey(event, "KeyN")) {
     event.preventDefault();
     startNewSession();
+    return;
+  }
+  if (isModShiftKey(event, "KeyS")) {
+    event.preventDefault();
+    toggleSpeak();
     return;
   }
   if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) {

@@ -30,13 +30,16 @@ class SystemPromptContextTests(unittest.TestCase):
         self.assertIn("Acme", prompt)
         self.assertIn("Own the payments API.", prompt)
         self.assertIn("Stripe billing", prompt)
+        self.assertIn("Candidate context:", prompt)
+        self.assertIn("Target job description:", prompt)
+        self.assertIn("Never claim the candidate used a technology", prompt)
         self.assertIn("Do not recite the resume", prompt)
 
     def test_resume_is_truncated(self) -> None:
         resume = "x" * (CONTEXT_RESUME_CHARS + 80)
         block = context_block(resume=resume)
         self.assertIn("…", block)
-        self.assertLess(len(block), len(resume) + 200)
+        self.assertLess(len(block), len(resume) + 400)
 
 
 class HistoryMessageTests(unittest.TestCase):

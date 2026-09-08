@@ -1438,7 +1438,8 @@ body[data-view="library"] .library {
   .toolbar,
   .ask-card,
   .idle-guide,
-  .export-actions {
+  .export-actions,
+  .current-actions {
     display: none !important;
   }
 
