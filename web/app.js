@@ -30,6 +30,13 @@ const askShortcutEl = document.getElementById("ask-shortcut");
 const copyAnswerBtn = document.getElementById("copy-answer");
 const speakAnswerBtn = document.getElementById("speak-answer");
 const answerTagEl = document.getElementById("answer-tag");
+const answerModeEl = document.getElementById("answer-mode");
+const editQuestionBtn = document.getElementById("edit-question");
+const reviseFormEl = document.getElementById("revise-form");
+const reviseInputEl = document.getElementById("revise-input");
+const reviseCancelEl = document.getElementById("revise-cancel");
+const pointsPanelEl = document.getElementById("points-panel");
+const redraftBarEl = document.getElementById("redraft-bar");
 const contextCardEl = document.getElementById("context-card");
 const contextFormEl = document.getElementById("context-form");
 const contextRoleEl = document.getElementById("context-role");
@@ -70,7 +77,7 @@ let socket = null;
 let reconnectTimer = 0;
 let latestSession = null;
 let currentView = "idle";
-let current = { question: "", answer: "", source: "", answer_mode: "", talking_points: null };
+let current = { question: "", answer: "", source: "", answer_mode: "", turn_mode: "", talking_points: null };
 let libraryItems = [];
 let libraryQuery = "";
 let libraryTimer = 0;
@@ -89,7 +96,37 @@ let speaking = false;
 let speakKeepAlive = 0;
 const CONTEXT_STORAGE_KEY = "ai-interview-context";
 const CONTEXT_HINT = "Paste the JD and resume once — used for every answer";
-const DEFAULT_ANSWER_MODE = "spoken_45";
+const DEFAULT_ANSWER_MODE = "auto";
+const MODE_TITLES = {
+  auto: "Auto",
+  spoken_20: "Spoken 20s",
+  spoken_45: "Answer",
+  glanceable: "Glanceable",
+  star: "STAR",
+  system_design: "System design",
+  coding: "Coding",
+};
+const MODE_ALIASES = {
+  "15": "spoken_20",
+  "15s": "spoken_20",
+  "20": "spoken_20",
+  "20s": "spoken_20",
+  spoken_15: "spoken_20",
+  short: "spoken_20",
+  "45": "spoken_45",
+  "45s": "spoken_45",
+  spoken: "spoken_45",
+  default: "auto",
+  behavioral: "star",
+  systemdesign: "system_design",
+  design: "system_design",
+  outline: "glanceable",
+  bullets: "glanceable",
+  bullet: "glanceable",
+  glance: "glanceable",
+  code: "coding",
+};
+let answerModeCatalog = [{ id: "auto", label: "Auto", title: "Auto" }];
 let contextDirty = false;
 let contextSeeded = false;
 let currentAnswerMode = DEFAULT_ANSWER_MODE;
@@ -207,23 +244,61 @@ function applyContext(payload, { force = false, markSaved = false } = {}) {
   fillContextForm(payload, { markSaved });
 }
 
-function normalizeAnswerMode(_value) {
-  return DEFAULT_ANSWER_MODE;
+function normalizeAnswerMode(value) {
+  const key = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, "_")
+    .replace(/\s+/g, "_");
+  if (answerModeCatalog.some((item) => item.id === key) || MODE_TITLES[key]) {
+    return key;
+  }
+  return MODE_ALIASES[key] || DEFAULT_ANSWER_MODE;
+}
+
+function fillAnswerModeSelect(catalog) {
+  if (!answerModeEl) {
+    return;
+  }
+  const items = Array.isArray(catalog) && catalog.length ? catalog : answerModeCatalog;
+  answerModeCatalog = items;
+  const currentValue = answerModeEl.value || currentAnswerMode;
+  answerModeEl.replaceChildren();
+  for (const item of items) {
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = item.label || item.title || item.id;
+    answerModeEl.append(option);
+  }
+  answerModeEl.value = items.some((item) => item.id === currentValue) ? currentValue : DEFAULT_ANSWER_MODE;
 }
 
 function updateAnswerTag() {
-  if (answerTagEl) {
-    answerTagEl.textContent = "Answer";
+  if (!answerTagEl) {
+    return;
   }
+  const turn = current.turn_mode || current.answer_mode || currentAnswerMode;
+  const pref = currentAnswerMode;
+  if (pref === "auto" && turn && turn !== "auto") {
+    answerTagEl.textContent = MODE_TITLES[turn] || turn;
+    return;
+  }
+  answerTagEl.textContent = MODE_TITLES[pref] || "Answer";
 }
 
-function applyAnswerMode(_mode) {
-  currentAnswerMode = DEFAULT_ANSWER_MODE;
+function applyAnswerMode(mode) {
+  currentAnswerMode = normalizeAnswerMode(mode);
+  if (answerModeEl && [...answerModeEl.options].some((item) => item.value === currentAnswerMode)) {
+    answerModeEl.value = currentAnswerMode;
+  }
   updateAnswerTag();
 }
 
-function seedAnswerMode(_event) {
-  applyAnswerMode(DEFAULT_ANSWER_MODE);
+function seedAnswerMode(event) {
+  if (Array.isArray(event?.answer_modes) && event.answer_modes.length) {
+    fillAnswerModeSelect(event.answer_modes);
+  }
+  applyAnswerMode(event?.answer_mode || event?.session?.answer_mode || currentAnswerMode);
 }
 
 function setStatus(state, label) {
@@ -440,7 +515,7 @@ function archiveCurrent() {
   if (current.question && current.answer && !isSkipAnswer(current.answer) && current.answer !== PLACEHOLDER_ANSWER) {
     prependPair(current.question, current.answer, current.source, current.answer_mode);
   }
-  current = { question: "", answer: "", source: "", answer_mode: currentAnswerMode, talking_points: null };
+  current = { question: "", answer: "", source: "", answer_mode: currentAnswerMode, turn_mode: "", talking_points: null };
 }
 
 function isSkipAnswer(text) {
@@ -846,20 +921,56 @@ function setAnswerText(text) {
     answerEl.textContent = PLACEHOLDER_ANSWER;
     updateCopyButton();
     updateAnswerTag();
+    renderPointsPanel(null);
+    updateDraftActions();
     return;
   }
   answerEl.classList.remove("is-points");
-  setRichText(answerEl, value, current.source, current.answer_mode || currentAnswerMode);
+  const glance = (current.turn_mode || current.answer_mode || currentAnswerMode) === "glanceable";
+  const points = glance ? normalizeTalkingPoints(current.talking_points) || extractTalkingPoints(value) : null;
+  if (glance && points?.bullets?.length && canShowPoints(value)) {
+    renderTalkingPoints(answerEl, points);
+  } else {
+    setRichText(answerEl, value, current.source, current.turn_mode || current.answer_mode || currentAnswerMode);
+  }
   updateCopyButton();
   updateAnswerTag();
+  renderPointsPanel(canShowPoints(value) ? normalizeTalkingPoints(current.talking_points) || extractTalkingPoints(value) : null);
+  updateDraftActions();
 }
 
-function setCurrent(question, answer, source, mode, talkingPointsPayload) {
+function renderPointsPanel(points) {
+  if (!pointsPanelEl) {
+    return;
+  }
+  const glance = (current.turn_mode || current.answer_mode || currentAnswerMode) === "glanceable";
+  if (!points?.bullets?.length || glance) {
+    pointsPanelEl.hidden = true;
+    pointsPanelEl.replaceChildren();
+    return;
+  }
+  pointsPanelEl.hidden = false;
+  renderTalkingPoints(pointsPanelEl, points);
+}
+
+function updateDraftActions() {
+  const ready = canShowPoints(current.answer);
+  const hasQuestion = Boolean(current.question) && current.question !== PLACEHOLDER_QUESTION;
+  if (editQuestionBtn) {
+    editQuestionBtn.hidden = !hasQuestion || currentView === "library";
+  }
+  if (redraftBarEl) {
+    redraftBarEl.hidden = !ready;
+  }
+}
+
+function setCurrent(question, answer, source, mode, talkingPointsPayload, turnMode) {
   current = {
     question: question || "",
     answer: answer || "",
     source: source ?? current.source ?? "",
     answer_mode: normalizeAnswerMode(mode || current.answer_mode || currentAnswerMode),
+    turn_mode: turnMode ? normalizeAnswerMode(turnMode) : current.turn_mode || "",
     talking_points: normalizeTalkingPoints(talkingPointsPayload),
   };
   setQuestionText(current.question);
@@ -1208,7 +1319,7 @@ function applySnapshot(event) {
   for (const pair of [...older].reverse()) {
     prependPair(pair.question, pair.answer, pair.source, pair.answer_mode);
   }
-  setCurrent(liveQuestion, liveAnswer, event.source || "", event.answer_mode, event.talking_points);
+  setCurrent(liveQuestion, liveAnswer, event.source || "", event.answer_mode, event.talking_points, event.turn_mode);
   showHistory();
   applySession(event.session);
   seedContext(event);
@@ -1317,6 +1428,7 @@ function handleEvent(event) {
       current.answer = label;
       current.source = event.source || current.source || "spoken";
       current.answer_mode = normalizeAnswerMode(event.answer_mode || current.answer_mode || currentAnswerMode);
+      current.turn_mode = event.turn_mode ? normalizeAnswerMode(event.turn_mode) : current.turn_mode;
       current.talking_points = null;
       setQuestionText(current.question);
       setAnswerText(current.answer);
@@ -1332,6 +1444,7 @@ function handleEvent(event) {
     current.answer = "";
     current.source = event.source || "spoken";
     current.answer_mode = normalizeAnswerMode(event.answer_mode || currentAnswerMode);
+    current.turn_mode = "";
     current.talking_points = null;
     setQuestionText(current.question, { partial: true });
     setAnswerText("");
@@ -1339,17 +1452,20 @@ function handleEvent(event) {
     return;
   }
   if (type === "question") {
-    archiveCurrent();
+    if (!event.replace) {
+      archiveCurrent();
+    }
     current.question = event.text || "";
     current.answer = event.valid === false ? SKIPPED_ANSWER : "";
     current.source = event.source || "spoken";
     current.answer_mode = normalizeAnswerMode(event.answer_mode || currentAnswerMode);
+    current.turn_mode = event.turn_mode ? normalizeAnswerMode(event.turn_mode) : current.turn_mode;
     current.talking_points = null;
     setQuestionText(current.question);
     setAnswerText(current.answer || (event.valid === false ? "" : "Drafting…"));
     updateAnswerTag();
     if (event.valid === false) {
-      prependPair(current.question, current.answer, current.source, current.answer_mode);
+      prependPair(current.question, current.answer, current.source, current.turn_mode || current.answer_mode);
       setCurrent("", "", "", currentAnswerMode);
       setQuestionText("");
       setAnswerText("");
@@ -1366,6 +1482,9 @@ function handleEvent(event) {
     if (event.answer_mode) {
       current.answer_mode = normalizeAnswerMode(event.answer_mode);
     }
+    if (event.turn_mode) {
+      current.turn_mode = normalizeAnswerMode(event.turn_mode);
+    }
     current.talking_points = normalizeTalkingPoints(event.talking_points);
     setAnswerText(current.answer);
     setStatus("checking", "Drafting");
@@ -1378,6 +1497,9 @@ function handleEvent(event) {
     }
     if (event.answer_mode) {
       current.answer_mode = normalizeAnswerMode(event.answer_mode);
+    }
+    if (event.turn_mode) {
+      current.turn_mode = normalizeAnswerMode(event.turn_mode);
     }
     current.talking_points = normalizeTalkingPoints(event.talking_points);
     setAnswerText(current.answer);
@@ -1396,6 +1518,9 @@ function handleEvent(event) {
     }
     if (event.answer_mode) {
       current.answer_mode = normalizeAnswerMode(event.answer_mode);
+    }
+    if (event.turn_mode) {
+      current.turn_mode = normalizeAnswerMode(event.turn_mode);
     }
     current.talking_points = normalizeTalkingPoints(event.talking_points);
     setQuestionText(current.question);
@@ -1584,6 +1709,83 @@ function setAskError(message) {
   askErrorEl.textContent = message || "";
 }
 
+async function submitAnswerMode(mode) {
+  const value = normalizeAnswerMode(mode);
+  applyAnswerMode(value);
+  try {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "set_answer_mode", mode: value }));
+      return;
+    }
+    await fetch(withToken("/api/session/answer-mode"), {
+      method: "PUT",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ mode: value }),
+    });
+  } catch {
+    setStatus("down", "Could not save mode");
+  }
+}
+
+function closeReviseForm() {
+  if (reviseFormEl) {
+    reviseFormEl.hidden = true;
+  }
+  if (questionEl) {
+    questionEl.hidden = false;
+  }
+}
+
+function openReviseForm() {
+  if (!reviseFormEl || !reviseInputEl) {
+    return;
+  }
+  reviseInputEl.value = current.question || "";
+  reviseFormEl.hidden = false;
+  if (questionEl) {
+    questionEl.hidden = true;
+  }
+  reviseInputEl.focus();
+  reviseInputEl.select();
+}
+
+async function submitRedraft(instruction, extra = {}) {
+  if (!current.question && extra.type !== "revise_question") {
+    return;
+  }
+  setStatus("checking", "Drafting");
+  setAnswerText("Drafting…");
+  try {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(
+        JSON.stringify({
+          type: extra.type || "redraft",
+          instruction,
+          mode: extra.mode || "",
+          text: extra.text || "",
+        })
+      );
+      return;
+    }
+    const path = extra.type === "revise_question" ? "/api/ask/revise" : "/api/ask/redraft";
+    const body =
+      extra.type === "revise_question"
+        ? { text: extra.text }
+        : { instruction, mode: extra.mode || "", question: extra.text || "" };
+    const response = await fetch(withToken(path), {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.detail || "Could not redraft.");
+    }
+  } catch (error) {
+    setStatus("down", error instanceof Error ? error.message : "Could not redraft");
+  }
+}
+
 async function submitTypedQuestion() {
   const text = askInputEl?.value.trim() || "";
   if (!text) {
@@ -1731,6 +1933,38 @@ copyAnswerBtn?.addEventListener("click", async () => {
 
 speakAnswerBtn?.addEventListener("click", () => {
   toggleSpeak();
+});
+
+answerModeEl?.addEventListener("change", () => {
+  submitAnswerMode(answerModeEl.value);
+});
+
+editQuestionBtn?.addEventListener("click", () => {
+  openReviseForm();
+});
+
+reviseCancelEl?.addEventListener("click", () => {
+  closeReviseForm();
+});
+
+reviseFormEl?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = reviseInputEl?.value.trim() || "";
+  if (!text) {
+    return;
+  }
+  current.question = text;
+  setQuestionText(text);
+  closeReviseForm();
+  submitRedraft("again", { type: "revise_question", text });
+});
+
+redraftBarEl?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-redraft]");
+  if (!button) {
+    return;
+  }
+  submitRedraft(button.getAttribute("data-redraft") || "again");
 });
 
 document.addEventListener("visibilitychange", syncWakeLock);

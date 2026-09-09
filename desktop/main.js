@@ -25,10 +25,12 @@ const PROJECT_ROOT = path.join(__dirname, "..");
 const LISTEN_SHORTCUT = "CommandOrControl+Shift+L";
 const END_SESSION_SHORTCUT = "CommandOrControl+Shift+E";
 const NEW_SESSION_SHORTCUT = "CommandOrControl+Shift+N";
+const OVERLAY_SHORTCUT = "CommandOrControl+Shift+O";
 
 let backendProcess = null;
 let startedBackend = false;
 let mainWindow = null;
+let overlayWindow = null;
 let isQuitting = false;
 const pendingIpc = new Set();
 
@@ -264,6 +266,66 @@ function createWindow({ show = true } = {}) {
   return window;
 }
 
+function overlayUrl() {
+  const token = (process.env.AI_INTERVIEW_TOKEN || "").trim();
+  const live = new URL(`${API_BASE}/live/overlay/`);
+  if (token) {
+    live.searchParams.set("token", token);
+  }
+  return live.toString();
+}
+
+function createOverlayWindow({ show = true } = {}) {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    return overlayWindow;
+  }
+  const window = new BrowserWindow({
+    width: 420,
+    height: 560,
+    minWidth: 320,
+    minHeight: 280,
+    show,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    fullscreenable: false,
+    backgroundColor: "#07080c",
+    title: "Talking points",
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    trafficLightPosition: { x: 12, y: 14 },
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  window.setAlwaysOnTop(true, "floating");
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  window.loadURL(overlayUrl());
+  window.on("close", (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      window.hide();
+    }
+  });
+  window.on("closed", () => {
+    if (overlayWindow === window) {
+      overlayWindow = null;
+    }
+  });
+  overlayWindow = window;
+  return window;
+}
+
+function toggleOverlay() {
+  const window = createOverlayWindow({ show: false });
+  if (window.isVisible()) {
+    window.hide();
+    return;
+  }
+  window.show();
+  window.focus();
+}
+
 function showWindow() {
   const window = createWindow();
   if (window.isMinimized()) {
@@ -279,6 +341,7 @@ function trayHandlers() {
     onToggle: sendToggleListen,
     onEndSession: sendEndSession,
     onNewSession: sendNewSession,
+    onOverlay: toggleOverlay,
     onQuit: () => {
       isQuitting = true;
       app.quit();
@@ -302,10 +365,15 @@ function registerSessionShortcuts() {
   registerGlobalShortcut(LISTEN_SHORTCUT, sendToggleListen);
   registerGlobalShortcut(END_SESSION_SHORTCUT, sendEndSession);
   registerGlobalShortcut(NEW_SESSION_SHORTCUT, sendNewSession);
+  registerGlobalShortcut(OVERLAY_SHORTCUT, toggleOverlay);
 }
 
 ipcMain.on("interview:listening", (_event, isListening) => {
   setTrayListening(isListening, trayHandlers());
+});
+
+ipcMain.handle("interview:toggle-overlay", () => {
+  toggleOverlay();
 });
 
 ipcMain.handle("interview:open-live", () => {

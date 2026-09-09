@@ -6,9 +6,16 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from .classify import DETAILS, ClipVerdict, classify_clip
+from .classify import DETAILS, ClipVerdict, classify_clip, resolve_turn_mode
 from .llm import build_system_prompt, copilot_turn, new_clients, transcribe_audio
-from .modes import DEFAULT_ANSWER_MODE, max_tokens_for_mode, normalize_answer_mode, prompt_for_mode
+from .modes import (
+    DEFAULT_ANSWER_MODE,
+    max_tokens_for_mode,
+    normalize_answer_mode,
+    prompt_for_mode,
+    redraft_hint,
+    redraft_mode_override,
+)
 from .session import InterviewSession, TurnRecord, ms_between, normalize_context, utc_now
 from .settings import MIN_AUDIO_BYTES, STT_PROVIDER, chat_ready, readiness_error
 from .store import SessionStore, get_store
@@ -194,6 +201,31 @@ class InterviewPipeline:
             return
         self._spawn(self._commit_typed(question))
 
+    async def redraft(
+        self,
+        *,
+        instruction: str | None = None,
+        mode: str | None = None,
+        question: str | None = None,
+    ) -> None:
+        if not chat_ready():
+            error = readiness_error() or "Chat model is not configured."
+            await self._emit({"type": "error", "message": error})
+            return
+        self._spawn(
+            self._commit_redraft(
+                instruction=instruction,
+                mode=mode,
+                question=question,
+            )
+        )
+
+    async def revise_question(self, text: str) -> None:
+        question = (text or "").strip()
+        if not question:
+            return
+        await self.redraft(question=question, instruction="again")
+
     def _spawn(self, coro) -> None:
         task = asyncio.create_task(coro)
         self._jobs.add(task)
@@ -221,12 +253,15 @@ class InterviewPipeline:
         await self._await_jobs()
         async with self._work:
             async with self._session_gate:
+                prior = self._session
                 if self._session is not None and self._session.active:
                     await self._finish_session(emit_summary=False)
                 else:
                     self._forget_session()
                     self._archive_resumable()
-                await self._open_session(resume=False)
+                    if prior is None:
+                        prior = self._store().latest()
+                await self._open_session(resume=False, prior=prior)
 
     async def close(self) -> None:
         self._closed = True
@@ -249,10 +284,13 @@ class InterviewPipeline:
     def _audio_bytes(self) -> bytes:
         return b"".join(self._chunks)
 
-    def _interview_history(self) -> list[tuple[str, str]]:
+    def _interview_history(self, *, exclude_last: bool = False) -> list[tuple[str, str]]:
         if self._session is None:
             return []
-        return self._session.recent_qa()
+        pairs = self._session.recent_qa()
+        if exclude_last and pairs:
+            return pairs[:-1]
+        return pairs
 
     def _current_answer_mode(self) -> str:
         if self._session is not None:
@@ -261,8 +299,22 @@ class InterviewPipeline:
             return normalize_answer_mode(self._pending_answer_mode)
         return DEFAULT_ANSWER_MODE
 
-    def _copilot_prompt(self, *, source: str) -> str:
-        base = prompt_for_mode(self._current_answer_mode(), source=source)
+    def _turn_mode(
+        self,
+        question: str,
+        *,
+        source: str,
+        override: str | None = None,
+    ) -> tuple[str, str]:
+        if override:
+            mode = normalize_answer_mode(override)
+            kind = resolve_turn_mode("auto", question, source=source)[1]
+            if mode != "auto":
+                return mode, kind
+        return resolve_turn_mode(self._current_answer_mode(), question, source=source)
+
+    def _copilot_prompt(self, *, source: str, mode: str | None = None) -> str:
+        base = prompt_for_mode(mode or self._current_answer_mode(), source=source)
         session = self._session
         if session is not None:
             return build_system_prompt(base, **session.context_payload())
@@ -270,6 +322,11 @@ class InterviewPipeline:
         if not any(pending.values()):
             return base
         return build_system_prompt(base, **pending)
+
+    def _last_turn(self):
+        if self._session is None or not self._session.turns:
+            return None
+        return self._session.turns[-1]
 
     def _apply_pending_context(self, session: InterviewSession) -> None:
         if self._pending_context is not None:
@@ -368,7 +425,12 @@ class InterviewPipeline:
         except Exception:
             logger.exception("could not archive leftover interview session")
 
-    async def _open_session(self, *, resume: bool) -> None:
+    async def _open_session(
+        self,
+        *,
+        resume: bool,
+        prior: InterviewSession | None = None,
+    ) -> None:
         if resume:
             resumed = self._store().resumable()
             if resumed is not None:
@@ -387,7 +449,8 @@ class InterviewPipeline:
                 return
         else:
             self._archive_resumable()
-        prior = self._store().latest()
+        if prior is None:
+            prior = self._store().latest()
         self._session = InterviewSession()
         self._session.copy_context_from(prior)
         self._apply_pending_context(self._session)
@@ -456,52 +519,12 @@ class InterviewPipeline:
                 return
 
             question = verdict.text or transcript
-            await self._emit({"type": "question", "text": question, "valid": True, "source": "spoken", "answer_mode": self._current_answer_mode()})
-            await self._emit({"type": "status", "state": "thinking", "detail": "Drafting answer"})
-
-            llm_first_ms = 0
-            llm_started = time.perf_counter()
-            mode = self._current_answer_mode()
-
-            async def on_answer(text: str) -> None:
-                nonlocal llm_first_ms
-                if not llm_first_ms:
-                    llm_first_ms = ms_between(llm_started, time.perf_counter())
-                await self._emit(
-                    {
-                        "type": "answer_delta",
-                        "text": text,
-                        "source": "spoken",
-                        "answer_mode": mode,
-                    }
-                )
-
-            try:
-                turn = await copilot_turn(
-                    self._clients.chat,
-                    question,
-                    on_answer=on_answer,
-                    history=self._interview_history(),
-                    system_prompt=self._copilot_prompt(source="spoken"),
-                    max_tokens=max_tokens_for_mode(mode, source="spoken"),
-                )
-            except Exception:
-                logger.exception("llm turn failed")
-                await self._emit({"type": "error", "message": "The LLM could not draft a reply."})
-                await self._emit({"type": "status", "state": "ready", "detail": "Paused"})
-                return
-            llm_ms = ms_between(llm_started, time.perf_counter())
-            turn.question = question
-            await self._publish(
-                turn,
+            await self._draft_answer(
                 question,
+                source="spoken",
                 listen_ms=listen_ms,
                 stt_ms=stt_ms,
-                llm_ms=llm_ms,
-                llm_first_ms=llm_first_ms or llm_ms,
                 stt_reused=reused,
-                streamed_question=True,
-                source="spoken",
             )
 
     async def _commit_typed(self, question: str) -> None:
@@ -515,67 +538,128 @@ class InterviewPipeline:
                 return
             if self._clients is None:
                 self._clients = new_clients()
+            await self._draft_answer(question, source="typed")
 
+    async def _commit_redraft(
+        self,
+        *,
+        instruction: str | None,
+        mode: str | None,
+        question: str | None,
+    ) -> None:
+        async with self._turn:
+            if self._closed:
+                return
+            await self._ensure_session()
+            last = self._last_turn()
+            text = (question or (last.question if last else "") or "").strip()
+            if not text:
+                await self._emit({"type": "error", "message": "There is no question to rewrite yet."})
+                return
+            if self._clients is None:
+                self._clients = new_clients()
+            previous = (last.answer if last else "") or ""
+            hint = redraft_hint(instruction)
+            override = redraft_mode_override(instruction, mode)
+            if previous and previous != "(no answer drafted)":
+                user = f"{text}\n\nPrevious draft:\n{previous}\n\nRewrite instruction: {hint}"
+            else:
+                user = f"{text}\n\nRewrite instruction: {hint}"
+            await self._draft_answer(
+                text,
+                source=last.source if last else "typed",
+                user_content=user,
+                mode_override=override,
+                replace_last=last is not None,
+                listen_ms=last.listen_ms if last else 0,
+                stt_ms=0,
+                stt_reused=False,
+            )
+
+    async def _draft_answer(
+        self,
+        question: str,
+        *,
+        source: str,
+        listen_ms: int = 0,
+        stt_ms: int = 0,
+        stt_reused: bool = False,
+        user_content: str | None = None,
+        mode_override: str | None = None,
+        replace_last: bool = False,
+    ) -> None:
+        if self._clients is None:
+            return
+        mode, kind = self._turn_mode(question, source=source, override=mode_override)
+        preference = self._current_answer_mode()
+        await self._emit(
+            {
+                "type": "question",
+                "text": question,
+                "valid": True,
+                "source": source,
+                "answer_mode": preference,
+                "turn_mode": mode,
+                "question_kind": kind,
+                "replace": replace_last,
+            }
+        )
+        await self._emit(
+            {
+                "type": "status",
+                "state": "thinking",
+                "detail": "Drafting typed question" if source == "typed" else "Drafting answer",
+            }
+        )
+
+        llm_first_ms = 0
+        llm_started = time.perf_counter()
+
+        async def on_answer(text: str) -> None:
+            nonlocal llm_first_ms
+            if not llm_first_ms:
+                llm_first_ms = ms_between(llm_started, time.perf_counter())
             await self._emit(
                 {
-                    "type": "question",
-                    "text": question,
-                    "valid": True,
-                    "source": "typed",
-                    "answer_mode": self._current_answer_mode(),
+                    "type": "answer_delta",
+                    "text": text,
+                    "source": source,
+                    "answer_mode": preference,
+                    "turn_mode": mode,
+                    "question_kind": kind,
                 }
             )
-            await self._emit(
-                {"type": "status", "state": "thinking", "detail": "Drafting typed question"}
+
+        try:
+            turn = await copilot_turn(
+                self._clients.chat,
+                user_content or question,
+                on_answer=on_answer,
+                history=self._interview_history(exclude_last=replace_last),
+                system_prompt=self._copilot_prompt(source=source, mode=mode),
+                max_tokens=max_tokens_for_mode(mode, source=source),
             )
-
-            mode = self._current_answer_mode()
-            token_limit = max_tokens_for_mode(mode, source="typed")
-
-            llm_first_ms = 0
-            llm_started = time.perf_counter()
-
-            async def on_answer(text: str) -> None:
-                nonlocal llm_first_ms
-                if not llm_first_ms:
-                    llm_first_ms = ms_between(llm_started, time.perf_counter())
-                await self._emit(
-                    {
-                        "type": "answer_delta",
-                        "text": text,
-                        "source": "typed",
-                        "answer_mode": mode,
-                    }
-                )
-
-            try:
-                turn = await copilot_turn(
-                    self._clients.chat,
-                    question,
-                    on_answer=on_answer,
-                    history=self._interview_history(),
-                    system_prompt=self._copilot_prompt(source="typed"),
-                    max_tokens=token_limit,
-                )
-            except Exception:
-                logger.exception("typed llm turn failed")
-                await self._emit({"type": "error", "message": "The LLM could not draft a reply."})
-                await self._emit({"type": "status", "state": "ready", "detail": "Paused"})
-                return
-
-            llm_ms = ms_between(llm_started, time.perf_counter())
-            turn.question = question
-            await self._publish(
-                turn,
-                question,
-                listen_ms=0,
-                stt_ms=0,
-                llm_ms=llm_ms,
-                llm_first_ms=llm_first_ms or llm_ms,
-                stt_reused=False,
-                streamed_question=True,
-                source="typed",
-            )
+        except Exception:
+            logger.exception("llm turn failed")
+            await self._emit({"type": "error", "message": "The LLM could not draft a reply."})
+            await self._emit({"type": "status", "state": "ready", "detail": "Paused"})
+            return
+        llm_ms = ms_between(llm_started, time.perf_counter())
+        turn.question = question
+        await self._publish(
+            turn,
+            question,
+            listen_ms=listen_ms,
+            stt_ms=stt_ms,
+            llm_ms=llm_ms,
+            llm_first_ms=llm_first_ms or llm_ms,
+            stt_reused=stt_reused,
+            streamed_question=True,
+            source=source,
+            turn_mode=mode,
+            question_kind=kind,
+            replace_last=replace_last,
+        )
 
     async def _resolve_transcript(
         self,
@@ -622,6 +706,9 @@ class InterviewPipeline:
         stt_reused: bool,
         streamed_question: bool,
         source: str = "spoken",
+        turn_mode: str | None = None,
+        question_kind: str | None = None,
+        replace_last: bool = False,
     ) -> None:
         text = (transcript or turn.question or turn.latest_speech or "").strip()
         answer = (turn.answer or "").strip()
@@ -641,16 +728,24 @@ class InterviewPipeline:
             )
             return
 
-        mode = self._current_answer_mode()
+        preference = self._current_answer_mode()
+        mode = normalize_answer_mode(turn_mode) if turn_mode else preference
+        kind = question_kind or ""
         points = extract_talking_points(answer).as_dict() if answer else None
+        payload = {
+            "source": source,
+            "answer_mode": preference,
+            "turn_mode": mode,
+            "question_kind": kind,
+            "replace": replace_last,
+        }
         if not streamed_question:
             await self._emit(
                 {
                     "type": "question",
                     "text": text,
                     "valid": True,
-                    "source": source,
-                    "answer_mode": mode,
+                    **payload,
                 }
             )
         if answer:
@@ -658,9 +753,8 @@ class InterviewPipeline:
                 {
                     "type": "answer",
                     "text": answer,
-                    "source": source,
-                    "answer_mode": mode,
                     "talking_points": points,
+                    **payload,
                 }
             )
             await self._emit(
@@ -669,9 +763,8 @@ class InterviewPipeline:
                     "question": text,
                     "answer": answer,
                     "valid": True,
-                    "source": source,
-                    "answer_mode": mode,
                     "talking_points": points,
+                    **payload,
                 }
             )
             logger.info("answer=%s", answer[:180])
@@ -682,13 +775,18 @@ class InterviewPipeline:
                     "question": text,
                     "answer": "(no answer drafted)",
                     "valid": True,
-                    "source": source,
-                    "answer_mode": mode,
+                    **payload,
                 }
             )
 
+        next_index = 1
+        if self._session is not None:
+            if replace_last and self._session.turns:
+                next_index = self._session.turns[-1].index
+            else:
+                next_index = len(self._session.turns) + 1
         record = TurnRecord(
-            index=len(self._session.turns) + 1 if self._session else 1,
+            index=next_index,
             question=text,
             answer=answer or "(no answer drafted)",
             listen_ms=listen_ms,
@@ -701,7 +799,11 @@ class InterviewPipeline:
             answer_mode=mode,
         )
         if self._session is not None:
-            self._session.add_turn(record)
+            if replace_last and self._session.turns:
+                self._session.turns[-1] = record
+                self._session.updated_at = utc_now()
+            else:
+                self._session.add_turn(record)
             self._persist()
             await self._emit(
                 {

@@ -123,7 +123,7 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual(loaded.company, "Globex")
         self.assertIn("Kafka", loaded.resume)
         self.assertEqual(loaded.snapshot()["context"]["company"], "Globex")
-        self.assertEqual(loaded.answer_mode, "spoken_45")
+        self.assertEqual(loaded.answer_mode, "auto")
 
         hits = self.store.list_summaries(query="Globex")
         self.assertEqual(len(hits), 1)
@@ -231,8 +231,8 @@ class SessionStoreTests(unittest.TestCase):
         loaded = self.store.get(session.id)
         self.assertIsNotNone(loaded)
         assert loaded is not None
-        self.assertEqual(loaded.answer_mode, "spoken_45")
-        self.assertEqual(loaded.turns[0].answer_mode, "spoken_45")
+        self.assertEqual(loaded.answer_mode, "star")
+        self.assertEqual(loaded.turns[0].answer_mode, "star")
 
     def test_search_tokens_match_snippets_and_escaping(self) -> None:
         mutex = InterviewSession(role="SWE", company="Globex")
@@ -447,6 +447,7 @@ class PipelinePersistTests(unittest.IsolatedAsyncioTestCase):
             job_description="Own checkout.",
             resume="Built payments at Stripe.",
         )
+        self.pipeline._session.set_answer_mode("spoken_45")
         self.pipeline._session_mono = 0.0
         self.pipeline._clients = SimpleNamespace(chat="chat", stt=None)
         captured: dict = {}
@@ -483,12 +484,65 @@ class PipelinePersistTests(unittest.IsolatedAsyncioTestCase):
         with patch("ai_interview.pipeline.copilot_turn", new=fake_copilot):
             await self.pipeline._commit_typed("Tell me about a production incident.")
         prompt = captured["system_prompt"] or ""
-        self.assertIn("**definition:**", prompt.lower())
-        self.assertNotIn("Situation:", prompt)
+        self.assertIn("Situation", prompt)
+        self.assertNotIn("**Definition:**", prompt)
         qa = [event for event in self.events if event.get("type") == "qa"][-1]
-        self.assertEqual(qa["answer_mode"], "spoken_45")
+        self.assertEqual(qa["turn_mode"], "star")
         assert self.pipeline._session is not None
-        self.assertEqual(self.pipeline._session.turns[-1].answer_mode, "spoken_45")
+        self.assertEqual(self.pipeline._session.turns[-1].answer_mode, "star")
+
+    async def test_auto_mode_routes_coding_questions(self) -> None:
+        self.pipeline._session = InterviewSession()
+        self.pipeline._session.set_answer_mode("auto")
+        self.pipeline._session_mono = 0.0
+        self.pipeline._clients = SimpleNamespace(chat="chat", stt=None)
+        captured: dict = {}
+
+        async def fake_copilot(_client, question, **kwargs):
+            captured["system_prompt"] = kwargs.get("system_prompt")
+            return CopilotTurn(stage="answer", question=question, answer="Use a hashmap.")
+
+        from unittest.mock import patch
+
+        with patch("ai_interview.pipeline.copilot_turn", new=fake_copilot):
+            await self.pipeline._commit_typed("Implement an LRU cache")
+        self.assertIn("runnable code", (captured["system_prompt"] or "").lower())
+        qa = [event for event in self.events if event.get("type") == "qa"][-1]
+        self.assertEqual(qa["answer_mode"], "auto")
+        self.assertEqual(qa["turn_mode"], "coding")
+        self.assertEqual(qa["question_kind"], "coding")
+        assert self.pipeline._session is not None
+        self.assertEqual(self.pipeline._session.answer_mode, "auto")
+        self.assertEqual(self.pipeline._session.turns[-1].answer_mode, "coding")
+
+    async def test_redraft_replaces_last_turn(self) -> None:
+        self.pipeline._session = InterviewSession()
+        self.pipeline._session.set_answer_mode("spoken_45")
+        self.pipeline._session_mono = 0.0
+        self.pipeline._clients = SimpleNamespace(chat="chat", stt=None)
+        self.pipeline._session.add_turn(
+            _turn(1, "What is a mutex?", "A lock used for mutual exclusion.")
+        )
+        captured: dict = {}
+
+        async def fake_copilot(_client, question, **kwargs):
+            captured["user"] = question
+            captured["history"] = kwargs.get("history")
+            return CopilotTurn(stage="answer", question="What is a mutex?", answer="A mutex is a lock.")
+
+        from unittest.mock import patch
+
+        with patch("ai_interview.pipeline.copilot_turn", new=fake_copilot):
+            await self.pipeline._commit_redraft(instruction="shorter", mode=None, question=None)
+        self.assertIn("Previous draft", captured["user"])
+        self.assertIn("20 seconds", captured["user"])
+        self.assertEqual(captured["history"], [])
+        assert self.pipeline._session is not None
+        self.assertEqual(len(self.pipeline._session.turns), 1)
+        self.assertEqual(self.pipeline._session.turns[-1].answer, "A mutex is a lock.")
+        self.assertEqual(self.pipeline._session.turns[-1].answer_mode, "spoken_20")
+        qa = [event for event in self.events if event.get("type") == "qa"][-1]
+        self.assertTrue(qa.get("replace"))
 
     async def test_answer_mode_persists_on_new_session(self) -> None:
         self.pipeline._session = InterviewSession()
@@ -496,8 +550,8 @@ class PipelinePersistTests(unittest.IsolatedAsyncioTestCase):
         self.pipeline._session_mono = 0.0
         await self.pipeline.start_new_session()
         assert self.pipeline._session is not None
-        self.assertEqual(self.pipeline._session.answer_mode, "spoken_45")
-        self.assertEqual(self.events[-1]["session"]["answer_mode"], "spoken_45")
+        self.assertEqual(self.pipeline._session.answer_mode, "system_design")
+        self.assertEqual(self.events[-1]["session"]["answer_mode"], "system_design")
 
     async def test_delete_stored_session_forgets_live_copy(self) -> None:
         self.pipeline._session = InterviewSession(role="SWE")

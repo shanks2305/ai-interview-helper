@@ -129,5 +129,25 @@ class ClassifyClipTests(unittest.TestCase):
         self.assertEqual(gc.action, "answer", gc)
 
 
+class QuestionKindTests(unittest.TestCase):
+    def test_routes_coding_design_and_behavioral(self) -> None:
+        from ai_interview.classify import classify_question_kind, resolve_turn_mode
+
+        self.assertEqual(classify_question_kind("Implement an LRU cache"), "coding")
+        self.assertEqual(classify_question_kind("Design a URL shortener"), "system_design")
+        self.assertEqual(classify_question_kind("Tell me about a time you failed"), "behavioral")
+        self.assertEqual(classify_question_kind("What is a mutex?"), "technical")
+        self.assertEqual(
+            classify_question_kind("Example 1:\nInput: [1]\nConstraints:\n1 <= n", typed=True),
+            "coding",
+        )
+
+        self.assertEqual(resolve_turn_mode("auto", "Implement an LRU cache")[0], "coding")
+        self.assertEqual(resolve_turn_mode("auto", "Design a URL shortener")[0], "system_design")
+        self.assertEqual(resolve_turn_mode("auto", "Tell me about a time you failed")[0], "star")
+        self.assertEqual(resolve_turn_mode("auto", "What is a mutex?")[0], "spoken_45")
+        self.assertEqual(resolve_turn_mode("star", "Implement an LRU cache")[0], "star")
+
+
 if __name__ == "__main__":
     unittest.main()

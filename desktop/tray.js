@@ -96,7 +96,7 @@ function iconFor(isListening) {
   return image;
 }
 
-function buildMenu({ onShow, onToggle, onEndSession, onNewSession, onQuit }) {
+function buildMenu({ onShow, onToggle, onEndSession, onNewSession, onOverlay, onQuit }) {
   return Menu.buildFromTemplate([
     {
       label: listening ? "Listening" : "Idle",
@@ -117,6 +117,11 @@ function buildMenu({ onShow, onToggle, onEndSession, onNewSession, onQuit }) {
       label: "New session",
       accelerator: "CommandOrControl+Shift+N",
       click: onNewSession,
+    },
+    {
+      label: "Talking points",
+      accelerator: "CommandOrControl+Shift+O",
+      click: onOverlay,
     },
     {
       label: "Open window",

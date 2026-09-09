@@ -1208,6 +1208,12 @@ for (const button of document.querySelectorAll("#open-live, #open-live-room, #op
   button.addEventListener("click", openLivePage);
 }
 
+for (const button of document.querySelectorAll("#open-overlay, #open-overlay-room")) {
+  button.addEventListener("click", () => {
+    window.interviewApp?.toggleOverlay?.();
+  });
+}
+
 document.getElementById("new-session")?.addEventListener("click", () => {
   newSession().catch(() => {
     showError("Could not start a new session.");
@@ -1224,6 +1230,7 @@ function bindShortcutLabel(id, accelerator) {
 bindShortcutLabel("listen-shortcut", window.interviewApp?.listenShortcut);
 bindShortcutLabel("end-session-shortcut", window.interviewApp?.endSessionShortcut);
 bindShortcutLabel("new-session-shortcut", window.interviewApp?.newSessionShortcut);
+bindShortcutLabel("overlay-shortcut", window.interviewApp?.overlayShortcut);
 
 if (endSessionBtn && window.interviewApp?.endSessionShortcut) {
   endSessionBtn.title = `End session (${shortcutLabel(window.interviewApp.endSessionShortcut)})`;

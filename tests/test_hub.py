@@ -153,8 +153,8 @@ class HubSnapshotTests(unittest.TestCase):
         self.assertEqual(snap["source"], "")
         self.assertEqual(snap["pairs"], [])
         self.assertIsNone(snap["session"])
-        self.assertEqual(snap["answer_mode"], "spoken_45")
-        self.assertEqual(len(snap["answer_modes"]), 1)
+        self.assertEqual(snap["answer_mode"], "auto")
+        self.assertEqual(len(snap["answer_modes"]), 7)
 
         hub.apply({"type": "status", "state": "listening", "detail": "Capturing question"})
         hub.apply({"type": "question", "text": "What is a mutex?", "source": "spoken"})
@@ -210,6 +210,24 @@ class HubSnapshotTests(unittest.TestCase):
         hub.apply(pair)
         self.assertEqual(len(hub.snapshot()["pairs"]), 1)
 
+    def test_qa_replace_updates_first_pair(self) -> None:
+        hub = LiveHub()
+        hub.apply({"type": "qa", "question": "Q", "answer": "A", "source": "spoken", "turn_mode": "spoken_45"})
+        hub.apply(
+            {
+                "type": "qa",
+                "question": "Q",
+                "answer": "B",
+                "source": "spoken",
+                "turn_mode": "spoken_20",
+                "replace": True,
+            }
+        )
+        snap = hub.snapshot()
+        self.assertEqual(len(snap["pairs"]), 1)
+        self.assertEqual(snap["pairs"][0]["answer"], "B")
+        self.assertEqual(snap["turn_mode"], "spoken_20")
+
 
 class HubContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_context_updated_and_snapshot(self) -> None:
@@ -261,7 +279,7 @@ class HubContextTests(unittest.IsolatedAsyncioTestCase):
         pipeline = InterviewPipeline(lambda event: None)
         hub.attach_pipeline(pipeline)
         self.assertEqual(pipeline._pending_context["company"], "Initech")
-        self.assertEqual(pipeline._pending_answer_mode, "spoken_45")
+        self.assertEqual(pipeline._pending_answer_mode, "auto")
 
     def test_snapshot_includes_empty_context(self) -> None:
         hub = LiveHub()
@@ -270,14 +288,14 @@ class HubContextTests(unittest.IsolatedAsyncioTestCase):
             snap["context"],
             {"role": "", "company": "", "job_description": "", "resume": ""},
         )
-        self.assertEqual(snap["answer_mode"], "spoken_45")
+        self.assertEqual(snap["answer_mode"], "auto")
 
     async def test_answer_mode_updated_and_snapshot(self) -> None:
         hub = LiveHub()
         mode = await hub.submit_answer_mode("star")
         snap = hub.snapshot()
-        self.assertEqual(mode, "spoken_45")
-        self.assertEqual(snap["answer_mode"], "spoken_45")
+        self.assertEqual(mode, "star")
+        self.assertEqual(snap["answer_mode"], "star")
         self.assertIsNone(snap["session"])
 
     def test_attach_pipeline_seeds_pending_answer_mode(self) -> None:
@@ -287,7 +305,7 @@ class HubContextTests(unittest.IsolatedAsyncioTestCase):
         hub.answer_mode = "bullets"
         pipeline = InterviewPipeline(lambda event: None)
         hub.attach_pipeline(pipeline)
-        self.assertEqual(pipeline._pending_answer_mode, "spoken_45")
+        self.assertEqual(pipeline._pending_answer_mode, "glanceable")
 
     async def test_start_new_session_clears_live_pairs(self) -> None:
         import tempfile

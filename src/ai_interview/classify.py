@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 from typing import Literal
 
 Action = Literal["answer", "skip"]
+QuestionKind = Literal["coding", "system_design", "behavioral", "technical"]
 Reason = Literal[
     "question",
     "follow_up",
@@ -691,3 +692,121 @@ def _singular(token: str) -> str:
     if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
         return token[:-1]
     return token
+
+
+_KIND_TO_MODE = {
+    "coding": "coding",
+    "system_design": "system_design",
+    "behavioral": "star",
+    "technical": "spoken_45",
+}
+
+_CODING_PHRASES = (
+    "implement ",
+    "write a function",
+    "write a method",
+    "write code",
+    "leetcode",
+    "given an array",
+    "given a string",
+    "given a list",
+    "given a tree",
+    "linked list",
+    "binary tree",
+    "binary search tree",
+    "two sum",
+    "reverse a",
+    "complete the function",
+    "fix this code",
+    "debug this",
+    "example 1:",
+    "constraints:",
+    "time complexity of this",
+    "return the",
+    "lru cache",
+    "invert a binary",
+)
+
+_DESIGN_PHRASES = (
+    "design a",
+    "design an",
+    "how would you design",
+    "how would you scale",
+    "how would you shard",
+    "system design",
+    "architecture for",
+    "url shortener",
+    "rate limiter",
+    "news feed",
+    "chat system",
+    "millions of users",
+    "billion users",
+    "high availability",
+    "walk me through how you would shard",
+    "walk me through how you would design",
+)
+
+_BEHAVIORAL_PHRASES = (
+    "tell me about a time",
+    "tell us about a time",
+    "walk me through a time",
+    "give an example of a time",
+    "talk about a time",
+    "describe a time",
+    "conflict",
+    "disagreement",
+    "proud of",
+    "biggest weakness",
+    "why do you want",
+    "why this company",
+    "why us",
+    "walk me through your resume",
+    "worked with a difficult",
+    "leadership",
+    "you failed",
+    "a failure",
+    "when you failed",
+)
+
+
+def classify_question_kind(text: str, *, typed: bool = False) -> QuestionKind:
+    folded = _fold(text)
+    if not folded:
+        return "technical"
+    if _has_phrase(folded, _CODING_PHRASES) or (typed and _looks_like_coding_prompt(text)):
+        return "coding"
+    if _has_phrase(folded, _BEHAVIORAL_PHRASES):
+        return "behavioral"
+    if _has_phrase(folded, _DESIGN_PHRASES):
+        return "system_design"
+    return "technical"
+
+
+def resolve_turn_mode(
+    preference: str | None,
+    question: str,
+    *,
+    source: str = "spoken",
+) -> tuple[str, QuestionKind]:
+    from .modes import is_auto_mode, normalize_answer_mode
+
+    kind = classify_question_kind(question, typed=source == "typed")
+    pref = normalize_answer_mode(preference)
+    if not is_auto_mode(pref):
+        return pref, kind
+    return _KIND_TO_MODE[kind], kind
+
+
+def _has_phrase(folded: str, phrases: tuple[str, ...]) -> bool:
+    return any(phrase in folded for phrase in phrases)
+
+
+def _looks_like_coding_prompt(text: str) -> bool:
+    raw = text or ""
+    if re.search(r"example\s*\d+\s*:", raw, flags=re.I):
+        return True
+    if re.search(r"^\s*constraints\s*:", raw, flags=re.I | re.M):
+        return True
+    if "```" in raw:
+        return True
+    return False

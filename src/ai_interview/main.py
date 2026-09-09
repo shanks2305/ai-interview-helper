@@ -152,6 +152,16 @@ class AnswerModeBody(BaseModel):
     mode: str = Field(default=DEFAULT_ANSWER_MODE, max_length=40)
 
 
+class RedraftBody(BaseModel):
+    instruction: str = Field(default="again", max_length=40)
+    mode: str = Field(default="", max_length=40)
+    question: str = Field(default="", max_length=20_000)
+
+
+class ReviseBody(BaseModel):
+    text: str = Field(min_length=1, max_length=20_000)
+
+
 @app.post("/api/ask")
 async def api_ask(body: AskBody) -> dict[str, str]:
     error = await hub.submit_ask(body.text)
@@ -174,6 +184,26 @@ async def api_session_answer_mode(body: AnswerModeBody) -> dict[str, Any]:
         "answer_mode": mode,
         "answer_modes": answer_mode_catalog(),
     }
+
+
+@app.post("/api/ask/redraft")
+async def api_ask_redraft(body: RedraftBody) -> dict[str, str]:
+    error = await hub.submit_redraft(
+        instruction=body.instruction,
+        mode=body.mode or None,
+        question=body.question or None,
+    )
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    return {"ok": "queued"}
+
+
+@app.post("/api/ask/revise")
+async def api_ask_revise(body: ReviseBody) -> dict[str, str]:
+    error = await hub.submit_revise(body.text)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    return {"ok": "queued"}
 
 
 @app.post("/api/session/new")
@@ -210,6 +240,18 @@ async def live_socket(websocket: WebSocket) -> None:
             event_type = event.get("type")
             if event_type == "ask":
                 error = await hub.submit_ask(str(event.get("text") or ""))
+                if error:
+                    await websocket.send_json({"type": "error", "message": error})
+            elif event_type == "redraft":
+                error = await hub.submit_redraft(
+                    instruction=str(event.get("instruction") or ""),
+                    mode=str(event.get("mode") or event.get("answer_mode") or "") or None,
+                    question=str(event.get("text") or event.get("question") or "") or None,
+                )
+                if error:
+                    await websocket.send_json({"type": "error", "message": error})
+            elif event_type == "revise_question":
+                error = await hub.submit_revise(str(event.get("text") or event.get("question") or ""))
                 if error:
                     await websocket.send_json({"type": "error", "message": error})
             elif event_type == "set_context":
@@ -278,6 +320,14 @@ async def interview_socket(websocket: WebSocket) -> None:
                 elif event_type == "ask":
                     logger.info("event ask chars=%s", len(str(event.get("text") or "")))
                     await pipeline.ask_typed(str(event.get("text") or ""))
+                elif event_type == "redraft":
+                    await pipeline.redraft(
+                        instruction=str(event.get("instruction") or ""),
+                        mode=str(event.get("mode") or event.get("answer_mode") or "") or None,
+                        question=str(event.get("text") or event.get("question") or "") or None,
+                    )
+                elif event_type == "revise_question":
+                    await pipeline.revise_question(str(event.get("text") or event.get("question") or ""))
                 elif event_type == "set_context":
                     await pipeline.set_context(normalize_context(event))
                 elif event_type == "set_answer_mode":
@@ -317,6 +367,22 @@ def live_js() -> FileResponse:
 @app.get("/live/markdown.js", include_in_schema=False)
 def live_markdown() -> FileResponse:
     return _web_file("markdown.js", "text/javascript")
+
+
+@app.get("/live/overlay", include_in_schema=False)
+@app.get("/live/overlay/", include_in_schema=False)
+def overlay_page() -> FileResponse:
+    return FileResponse(WEB_DIR / "overlay.html", headers=NO_STORE)
+
+
+@app.get("/live/overlay.css", include_in_schema=False)
+def overlay_css() -> FileResponse:
+    return _web_file("overlay.css", "text/css")
+
+
+@app.get("/live/overlay.js", include_in_schema=False)
+def overlay_js() -> FileResponse:
+    return _web_file("overlay.js", "text/javascript")
 
 if RENDERER_DIR.exists():
     app.mount("/", StaticFiles(directory=RENDERER_DIR, html=True), name="ui")

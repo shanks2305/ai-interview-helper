@@ -23,6 +23,8 @@ class LiveHub:
         self.session: dict[str, Any] | None = None
         self.context: dict[str, str] = empty_context()
         self.answer_mode = DEFAULT_ANSWER_MODE
+        self.turn_mode = DEFAULT_ANSWER_MODE
+        self.question_kind = ""
         self.talking_points: dict[str, Any] | None = None
         self._pipeline: Any = None
         self._standalone: Any = None
@@ -39,6 +41,8 @@ class LiveHub:
             "session": self.session,
             "context": dict(self.context),
             "answer_mode": self.answer_mode,
+            "turn_mode": self.turn_mode,
+            "question_kind": self.question_kind,
             "answer_modes": answer_mode_catalog(),
             "talking_points": dict(self.talking_points) if self.talking_points else None,
         }
@@ -73,14 +77,14 @@ class LiveHub:
             self.talking_points = None
             self._drafting = False
             self.source = event.get("source") or "spoken"
-            self._set_mode(event.get("answer_mode"))
+            self._set_turn_mode(event)
             return
         if kind in {"answer", "answer_delta"}:
             self.answer = event.get("text") or ""
             self._drafting = kind == "answer_delta"
             if event.get("source"):
                 self.source = event.get("source")
-            self._set_mode(event.get("answer_mode"))
+            self._set_turn_mode(event)
             self._refresh_talking_points(event.get("talking_points"), self.answer)
             return
         if kind == "qa":
@@ -88,15 +92,17 @@ class LiveHub:
             self.question = event.get("question") or ""
             self.answer = event.get("answer") or ""
             self.source = event.get("source") or self.source or "spoken"
-            self._set_mode(event.get("answer_mode"))
+            self._set_turn_mode(event)
             self._refresh_talking_points(event.get("talking_points"), self.answer)
             pair = {
                 "question": self.question,
                 "answer": self.answer or "(no answer)",
                 "source": self.source,
-                "answer_mode": self.answer_mode,
+                "answer_mode": str(event.get("turn_mode") or self.turn_mode or self.answer_mode),
             }
-            if not self.pairs or self.pairs[0] != pair:
+            if event.get("replace") and self.pairs:
+                self.pairs[0] = pair
+            elif not self.pairs or self.pairs[0] != pair:
                 self.pairs.insert(0, pair)
                 self.pairs = self.pairs[:40]
             return
@@ -106,6 +112,8 @@ class LiveHub:
                 self.answer = event.get("detail") or self.answer
                 self.talking_points = None
                 self._drafting = False
+                self.turn_mode = self.answer_mode
+                self.question_kind = ""
                 if event.get("source"):
                     self.source = event.get("source")
             return
@@ -120,6 +128,8 @@ class LiveHub:
                 self.source = ""
                 self.talking_points = None
                 self._drafting = False
+                self.turn_mode = self.answer_mode
+                self.question_kind = ""
             elif kind == "session_resume":
                 self._apply_session_view(self.session)
             return
@@ -137,6 +147,8 @@ class LiveHub:
                     self.source = ""
                     self.talking_points = None
                     self._drafting = False
+                    self.turn_mode = self.answer_mode
+                    self.question_kind = ""
             return
         if kind == "context_updated":
             if event.get("session"):
@@ -172,6 +184,14 @@ class LiveHub:
     def _set_mode(self, value: Any) -> None:
         if value:
             self.answer_mode = normalize_answer_mode(str(value))
+
+    def _set_turn_mode(self, event: dict[str, Any]) -> None:
+        kind = event.get("question_kind")
+        if kind:
+            self.question_kind = str(kind)
+        turn_mode = event.get("turn_mode") or event.get("answer_mode")
+        if turn_mode:
+            self.turn_mode = normalize_answer_mode(str(turn_mode))
 
     def _sync_mode(self, session: dict[str, Any] | None) -> None:
         if not session:
@@ -215,13 +235,17 @@ class LiveHub:
             self.question = str(last.get("question") or "")
             self.answer = str(last.get("answer") or "")
             self.source = str(last.get("source") or "spoken")
-            self._set_mode(last.get("answer_mode") or (session or {}).get("answer_mode"))
+            self.turn_mode = normalize_answer_mode(
+                str(last.get("answer_mode") or (session or {}).get("answer_mode") or "")
+            )
             self._refresh_talking_points(None, self.answer)
             return
         self.question = ""
         self.answer = ""
         self.source = ""
         self.talking_points = None
+        self.turn_mode = self.answer_mode
+        self.question_kind = ""
 
     async def publish(self, event: dict[str, Any]) -> None:
         self.apply(event)
@@ -279,6 +303,30 @@ class LiveHub:
         await self._active_pipeline().set_answer_mode(mode)
         return self.answer_mode
 
+    async def submit_redraft(
+        self,
+        *,
+        instruction: str | None = None,
+        mode: str | None = None,
+        question: str | None = None,
+    ) -> str | None:
+        text = (question or self.question or "").strip()
+        if not text and not (self.session or {}).get("turns"):
+            return "There is no question to rewrite yet."
+        await self._active_pipeline().redraft(
+            instruction=instruction,
+            mode=mode,
+            question=(question or self.question or None),
+        )
+        return None
+
+    async def submit_revise(self, text: str) -> str | None:
+        question = (text or "").strip()
+        if not question:
+            return "Edit the question first."
+        await self._active_pipeline().revise_question(question)
+        return None
+
     async def start_new_session(self) -> None:
         await self._active_pipeline().start_new_session()
 
@@ -293,6 +341,8 @@ class LiveHub:
         self.source = ""
         self.talking_points = None
         self._drafting = False
+        self.turn_mode = self.answer_mode
+        self.question_kind = ""
 
     async def delete_session(self, session_id: str) -> bool:
         sid = (session_id or "").strip()

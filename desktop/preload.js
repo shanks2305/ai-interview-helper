@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld("interviewApp", {
   token,
   listenShortcut: "CommandOrControl+Shift+L",
   endSessionShortcut: "CommandOrControl+Shift+E",
-  newSessionShortcut: "CommandOrControl+Shift+N",
+  overlayShortcut: "CommandOrControl+Shift+O",
   onToggleListen(callback) {
     const listener = () => {
       callback();
@@ -41,6 +41,9 @@ contextBridge.exposeInMainWorld("interviewApp", {
   },
   openLive() {
     return ipcRenderer.invoke("interview:open-live");
+  },
+  toggleOverlay() {
+    return ipcRenderer.invoke("interview:toggle-overlay");
   },
   getDesktopSource() {
     return ipcRenderer.invoke("interview:desktop-source");
